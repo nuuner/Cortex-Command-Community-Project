@@ -1,12 +1,14 @@
 #include "NetLockstep.h"
 
 #include "MovableMan.h"
+#include "TimerMan.h"
 
 #include "DeterminismChecker.h"
 #include "InputRecorder.h"
 #include "System.h"
 
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdlib>
 #include <format>
@@ -33,8 +35,18 @@ std::string NetLockstep::s_HostPort;
 std::string NetLockstep::s_JoinAddress;
 long long NetLockstep::s_InputDelay = 3;
 bool NetLockstep::s_InputDelayIsKnown = false;
+bool NetLockstep::s_InputDelayIsFixed = false;
+bool NetLockstep::s_LeaveInputUpdateOpen = false;
+long long NetLockstep::s_LastInputDelayChange = 0;
+long long NetLockstep::s_StallAllowance = 0;
+long long NetLockstep::s_LastStallAllowanceChange = 0;
+long long NetLockstep::s_LastStallNotice = 0;
+std::deque<double> NetLockstep::s_PingSamplesMS;
 int NetLockstep::s_ArtificialLatencyMS = 0;
 std::deque<std::pair<std::chrono::steady_clock::time_point, std::string>> NetLockstep::s_HeldBackMessages;
+std::recursive_mutex NetLockstep::s_SendMutex;
+std::thread NetLockstep::s_SenderThread;
+std::atomic<bool> NetLockstep::s_SenderThreadRunning = false;
 long long NetLockstep::s_StalledUpdateCount = 0;
 double NetLockstep::s_StalledMS = 0;
 long long NetLockstep::s_MatchedHashCount = 0;
@@ -44,6 +56,11 @@ std::map<long long, uint64_t> NetLockstep::s_StateHashes[NetLockstep::c_PlayerCo
 std::string NetLockstep::s_ReceiveBuffer;
 
 namespace {
+	/// Gets the time on this machine's clock, in microseconds.
+	long long GetClockUS() {
+		return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	}
+
 	/// Reports a failure to set up the connection, and quits. There are no managers around yet to report through.
 	[[noreturn]] void FailSetup(const std::string& message) {
 		std::cerr << "Lockstep: " << message << std::endl;
@@ -69,7 +86,7 @@ void NetLockstep::Connect() {
 	} else {
 		return;
 	}
-	std::cerr << "Lockstep: input is delayed by " << s_InputDelay << " updates, and what this machine sends by another " << s_ArtificialLatencyMS << " ms." << std::endl;
+	std::cerr << "Lockstep: input is delayed by " << s_InputDelay << " updates" << (s_InputDelayIsFixed ? "" : " to begin with") << ", and what this machine sends by another " << s_ArtificialLatencyMS << " ms." << std::endl;
 }
 
 void NetLockstep::Host() {
@@ -137,6 +154,15 @@ void NetLockstep::Start(int socket, int localPlayer) {
 	s_Socket = socket;
 	s_LocalPlayer = localPlayer;
 	s_Active = true;
+	if (s_ArtificialLatencyMS > 0) {
+		s_SenderThreadRunning = true;
+		s_SenderThread = std::thread([]() {
+			while (s_SenderThreadRunning) {
+				SendHeldBackMessages();
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		});
+	}
 	std::cerr << "Lockstep: connected, playing as player " << localPlayer + 1 << "." << std::endl;
 }
 
@@ -182,6 +208,8 @@ void NetLockstep::BeginSimUpdate() {
 	++s_SimUpdate;
 	SendHeldBackMessages();
 
+	AdaptInputDelay();
+
 	// This machine's input since the last update goes to a later update, to give it time to get to the other machine.
 	long long inputUpdate = s_SimUpdate + s_InputDelay;
 	std::string message;
@@ -198,8 +226,15 @@ void NetLockstep::BeginSimUpdate() {
 		message += std::format("{} h {:016x}\n", s_SimUpdate, hasher.GetHash());
 		CompareStateHashes(s_SimUpdate);
 	}
-	// This tells the other machine that it has all of this machine's input for that update.
-	message += std::format("{} .\n", inputUpdate);
+	if (s_LeaveInputUpdateOpen) {
+		// The next update's input goes to this same update now, which is what makes the delay one shorter.
+		s_LeaveInputUpdateOpen = false;
+		--s_InputDelay;
+		s_LastInputDelayChange = s_SimUpdate;
+	} else {
+		// This tells the other machine that it has all of this machine's input for that update.
+		message += std::format("{} .\n", inputUpdate);
+	}
 	Send(message);
 
 	auto waitStart = std::chrono::steady_clock::now();
@@ -214,9 +249,15 @@ void NetLockstep::BeginSimUpdate() {
 		// The other machine may be waiting on what is being held back here, so that has to keep going out on time.
 		Receive(s_HeldBackMessages.empty() ? 100 : 2);
 	}
-	if (double waitedMS = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count(); waitedMS > 1.0) {
+	// A wait of less than half an update is just this machine keeping in step with the other one, and doesn't hold anything up.
+	if (double waitedMS = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count(); waitedMS > g_TimerMan.GetDeltaTimeMS() * 0.5) {
 		++s_StalledUpdateCount;
 		s_StalledMS += waitedMS;
+		// The other machine's input is getting here too late, so ask it to hold its input back for longer. The start is left out, since the machines are still falling into step then.
+		if (s_SimUpdate > c_ShrinkInterval && s_SimUpdate - s_LastStallNotice >= c_PingInterval) {
+			s_LastStallNotice = s_SimUpdate;
+			Send(std::format("{} g\n", s_SimUpdate));
+		}
 	}
 	// Pick up anything else that has arrived, so that state hashes get compared without waiting for the next stall.
 	Receive(0);
@@ -233,9 +274,58 @@ void NetLockstep::BeginSimUpdate() {
 	s_ApplyingInput = false;
 }
 
+std::string NetLockstep::GetStatusText() {
+	if (s_PingSamplesMS.empty()) {
+		return std::format("Input delay {:.0f} ms", static_cast<double>(s_InputDelay) * g_TimerMan.GetDeltaTimeMS());
+	}
+	// Each machine only reads what has arrived once per update, which adds an update to the measurements on average that isn't the connection's doing.
+	double averagePingMS = 0.0;
+	for (double pingSampleMS: s_PingSamplesMS) {
+		averagePingMS += pingSampleMS / static_cast<double>(s_PingSamplesMS.size());
+	}
+	return std::format("Ping {:.0f} ms, input delay {:.0f} ms", std::max(0.0, averagePingMS - g_TimerMan.GetDeltaTimeMS()), static_cast<double>(s_InputDelay) * g_TimerMan.GetDeltaTimeMS());
+}
+
+void NetLockstep::AdaptInputDelay() {
+	// The ping is measured even when the delay is fixed, since it is shown to the player.
+	if (s_SimUpdate > c_PingInterval && s_SimUpdate % c_PingInterval == 0) {
+		Send(std::format("{} p {}\n", s_SimUpdate, GetClockUS()));
+	}
+	if (s_InputDelayIsFixed) {
+		return;
+	}
+	if (s_StallAllowance > 0 && s_SimUpdate - s_LastStallAllowanceChange > c_StallAllowanceDuration) {
+		--s_StallAllowance;
+		s_LastStallAllowanceChange = s_SimUpdate;
+	}
+	if (s_PingSamplesMS.empty()) {
+		return;
+	}
+
+	// Input has to get there in half the time a message takes to go there and back, with a little to spare.
+	// Each machine only reads what has arrived once per update, unless it is waiting for it, so the worst measurement has up to an update on either end that waiting input wouldn't have.
+	double worstPingMS = *std::max_element(s_PingSamplesMS.begin(), s_PingSamplesMS.end());
+	double connectionPingMS = std::max(0.0, worstPingMS - 2.0 * g_TimerMan.GetDeltaTimeMS());
+	long long wantedDelay = static_cast<long long>(std::ceil((connectionPingMS * 0.5 + 4.0) / g_TimerMan.GetDeltaTimeMS())) + s_StallAllowance;
+	wantedDelay = std::clamp(wantedDelay, 1LL, c_MaxInputDelay);
+
+	if (wantedDelay > s_InputDelay) {
+		// Growing leaves some updates without input from this machine, which is fine, so it can be done right away.
+		s_InputDelay = wantedDelay;
+		s_LastInputDelayChange = s_SimUpdate;
+	} else if (wantedDelay < s_InputDelay && s_SimUpdate - s_LastInputDelayChange >= c_ShrinkInterval) {
+		s_LeaveInputUpdateOpen = true;
+	}
+}
+
 void NetLockstep::Stop() {
 	if (!s_Active) {
 		return;
+	}
+	// The thread has to be joined whether or not there is still a connection, or the program can't exit properly.
+	if (s_SenderThread.joinable()) {
+		s_SenderThreadRunning = false;
+		s_SenderThread.join();
 	}
 	if (s_Socket >= 0) {
 		SendHeldBackMessages(true);
@@ -249,11 +339,13 @@ void NetLockstep::Stop() {
 	}
 	std::cerr << "Lockstep: ran " << s_SimUpdate << " updates, " << s_MatchedHashCount << " state hashes matched" << (s_Desynced ? ", and then the machines DESYNCED." : ".") << std::endl;
 	std::cerr << std::format("Lockstep: {} updates waited for the other player's input, for {:.0f} ms in total.", s_StalledUpdateCount, s_StalledMS) << std::endl;
+	std::cerr << std::format("Lockstep: input delay ended at {} updates, with a ping of about {:.0f} ms.", s_InputDelay, s_PingSamplesMS.empty() ? 0.0 : s_PingSamplesMS.back()) << std::endl;
 	s_Active = false;
 }
 
 void NetLockstep::Send(const std::string& text) {
 	if (s_ArtificialLatencyMS > 0) {
+		std::lock_guard<std::recursive_mutex> lock(s_SendMutex);
 		s_HeldBackMessages.emplace_back(std::chrono::steady_clock::now() + std::chrono::milliseconds(s_ArtificialLatencyMS), text);
 	} else {
 		SendNow(text);
@@ -261,6 +353,7 @@ void NetLockstep::Send(const std::string& text) {
 }
 
 void NetLockstep::SendHeldBackMessages(bool everything) {
+	std::lock_guard<std::recursive_mutex> lock(s_SendMutex);
 	while (!s_HeldBackMessages.empty() && (everything || s_HeldBackMessages.front().first <= std::chrono::steady_clock::now())) {
 		SendNow(s_HeldBackMessages.front().second);
 		s_HeldBackMessages.pop_front();
@@ -268,6 +361,7 @@ void NetLockstep::SendHeldBackMessages(bool everything) {
 }
 
 void NetLockstep::SendNow(const std::string& text) {
+	std::lock_guard<std::recursive_mutex> lock(s_SendMutex);
 	size_t sent = 0;
 	while (s_Socket >= 0 && sent < text.size()) {
 		ssize_t result = send(s_Socket, text.data() + sent, text.size() - sent, 0);
@@ -321,6 +415,25 @@ void NetLockstep::HandleRemoteLine(const std::string& line) {
 			s_RemoteCompleteThrough = s_InputDelay;
 			s_InputDelayIsKnown = true;
 		}
+	} else if (content.starts_with("p ")) {
+		// Send the other machine's clock reading straight back, for it to tell how long that took.
+		if (updateIsNear) {
+			Send(std::format("{} P {}\n", s_SimUpdate, std::atoll(content.c_str() + 2)));
+		}
+	} else if (content.starts_with("P ")) {
+		double pingMS = static_cast<double>(GetClockUS() - std::atoll(content.c_str() + 2)) / 1000.0;
+		// A measurement this far off is the other machine having been busy with something like loading, and says nothing about the connection.
+		if (pingMS >= 0.0 && pingMS < 1000.0) {
+			s_PingSamplesMS.push_back(pingMS);
+			if (s_PingSamplesMS.size() > c_PingSampleCount) {
+				s_PingSamplesMS.pop_front();
+			}
+		}
+	} else if (content == "g") {
+		if (updateIsNear && !s_InputDelayIsFixed && s_StallAllowance < 6) {
+			++s_StallAllowance;
+			s_LastStallAllowanceChange = s_SimUpdate;
+		}
 	} else if (content == ".") {
 		if (updateIsNear) {
 			s_RemoteCompleteThrough = std::max(s_RemoteCompleteThrough, simUpdate);
@@ -353,6 +466,7 @@ void NetLockstep::CompareStateHashes(long long simUpdate) {
 }
 
 void NetLockstep::Disconnect() {
+	std::lock_guard<std::recursive_mutex> lock(s_SendMutex);
 	if (s_Socket >= 0) {
 		close(s_Socket);
 		s_Socket = -1;

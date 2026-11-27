@@ -6,7 +6,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <deque>
+#include <atomic>
 #include <map>
+#include <mutex>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -29,9 +32,12 @@ namespace RTE {
 		/// @param address The address and port of the host, as "address:port".
 		static void SetJoinAddress(const std::string& address) { s_JoinAddress = address; }
 
-		/// Sets how many simulation updates input is held back for. The host decides this for both machines.
+		/// Sets how many simulation updates input is held back for, instead of having each machine adapt it to the connection as it goes. The host decides this for both machines.
 		/// @param inputDelay The number of simulation updates.
-		static void SetInputDelay(long long inputDelay) { s_InputDelay = std::max(1LL, inputDelay); }
+		static void SetInputDelay(long long inputDelay) {
+			s_InputDelay = std::clamp(inputDelay, 1LL, c_MaxInputDelay);
+			s_InputDelayIsFixed = true;
+		}
 
 		/// Sets how long everything this machine sends is held back for, to try out how a slower connection plays.
 		/// @param latencyMS The time to hold it back for, in milliseconds. A ping is twice this, when both machines are set to it.
@@ -57,6 +63,10 @@ namespace RTE {
 		/// @return The device ID.
 		static Uint32 GetPlayerDeviceID(int player) { return c_VirtualDeviceBase + player; }
 
+		/// Gets a line about how the connection is doing, to show to the player.
+		/// @return The ping and the input delay, as text.
+		static std::string GetStatusText();
+
 		/// Takes an input event from this machine's devices away from UInputMan, to hand it back at the simulation update that both machines apply it in.
 		/// @param inputEvent The input event.
 		/// @return Whether the event was taken, and so shouldn't be handled now.
@@ -71,6 +81,11 @@ namespace RTE {
 
 	private:
 		static constexpr int c_PlayerCount = 2; //!< How many machines, and so players, there are.
+		static constexpr long long c_MaxInputDelay = 30; //!< The most simulation updates that input can be held back for.
+		static constexpr long long c_PingInterval = 30; //!< How many simulation updates there are between measurements of how long the connection takes.
+		static constexpr size_t c_PingSampleCount = 10; //!< How many of the latest measurements the input delay goes by. It goes by the worst of them.
+		static constexpr long long c_ShrinkInterval = 60; //!< The fewest simulation updates there can be between changes of the input delay when it is shrinking.
+		static constexpr long long c_StallAllowanceDuration = 600; //!< How many simulation updates each extra update of input delay that the other machine asked for is kept for.
 		static constexpr long long c_HashInterval = 30; //!< How many simulation updates there are between the state hashes that get compared.
 		static constexpr int c_WaitTimeoutS = 120; //!< How long to wait for the other machine's input before giving up on it. It has to cover the other machine loading the game.
 		static constexpr Uint32 c_VirtualDeviceBase = 1000; //!< The mouse and keyboard ID of the first player. Each player gets a made up device, which is the same on both machines.
@@ -78,9 +93,19 @@ namespace RTE {
 		static std::string s_HostPort; //!< The port to host on, if this machine is to host.
 		static std::string s_JoinAddress; //!< The address to join, if this machine is to join.
 		static long long s_InputDelay; //!< How many simulation updates input is held back for. The joiner gets this from the host.
+		static bool s_InputDelayIsFixed; //!< Whether the input delay was set, and so isn't adapted to the connection.
+		static bool s_LeaveInputUpdateOpen; //!< Whether the input delay shrinks by one after this simulation update. The next update's input then goes to the same update as this one's, so that update can't be said to be complete yet.
+		static long long s_LastInputDelayChange; //!< The simulation update that the input delay last changed in.
+		static long long s_StallAllowance; //!< How many simulation updates of input delay are added because the other machine had to wait for this one's input.
+		static long long s_LastStallAllowanceChange; //!< The simulation update that the stall allowance last changed in.
+		static long long s_LastStallNotice; //!< The simulation update that this machine last told the other one that it had to wait in.
+		static std::deque<double> s_PingSamplesMS; //!< The latest measurements of how long a message takes to get to the other machine and back, in milliseconds.
 		static bool s_InputDelayIsKnown; //!< Whether the host's input delay has arrived, on the joiner.
 		static int s_ArtificialLatencyMS; //!< How long everything this machine sends is held back for, in milliseconds.
 		static std::deque<std::pair<std::chrono::steady_clock::time_point, std::string>> s_HeldBackMessages; //!< What is being held back for the artificial latency, with when each is to be sent.
+		static std::recursive_mutex s_SendMutex; //!< Guards sending and what is being held back, which the sender thread shares with the main thread.
+		static std::thread s_SenderThread; //!< Sends what is being held back when its time comes, so that the artificial latency doesn't also wait for the next simulation update.
+		static std::atomic<bool> s_SenderThreadRunning; //!< Whether the sender thread is to keep going.
 		static long long s_StalledUpdateCount; //!< How many simulation updates had to wait for the other machine's input.
 		static double s_StalledMS; //!< How long simulation updates have waited for the other machine's input in total, in milliseconds.
 
@@ -107,6 +132,9 @@ namespace RTE {
 
 		/// Connects to the hosting machine, and plays as player two.
 		static void Join();
+
+		/// Measures how long the connection takes, and fits the input delay of this machine to it. Each machine does this for its own input, without the other having to agree.
+		static void AdaptInputDelay();
 
 		/// Sends text to the other machine, after the artificial latency if there is any.
 		/// @param text The text to send.

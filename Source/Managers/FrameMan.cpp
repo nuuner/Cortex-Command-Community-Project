@@ -903,6 +903,9 @@ void FrameMan::Draw() {
 		set_clip_state(drawScreen, 1);
 
 		DrawScreenText(playerScreen, playerGUIBitmap);
+		if (NetLockstep::IsActive()) {
+			GetSmallFont()->DrawAligned(&playerGUIBitmap, 4, drawScreenGUI->h - 12, NetLockstep::GetStatusText(), GUIFont::Left);
+		}
 
 		// The position of the current draw screen on the backbuffer
 		Vector screenOffset;
