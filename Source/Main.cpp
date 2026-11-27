@@ -194,6 +194,12 @@ void HandleEarlyMainArgs(int argCount, char** argValue) {
 			NetLockstep::SetJoinAddress(argValue[++i]);
 		} else if (!lastArg && currentArg == "-net-delay") {
 			NetLockstep::SetInputDelay(std::atoll(argValue[++i]));
+		} else if (!lastArg && currentArg == "-net-epoch") {
+			NetLockstep::SetEpoch(std::atoi(argValue[++i]));
+		} else if (!lastArg && currentArg == "-net-force-resync") {
+			NetLockstep::SetForcedResyncUpdate(std::atoll(argValue[++i]));
+		} else if (!lastArg && currentArg == "-net-force-desync") {
+			NetLockstep::SetForcedDesyncUpdate(std::atoll(argValue[++i]));
 		} else if (!lastArg && currentArg == "-net-loss") {
 			NetLockstep::SetArtificialLoss(std::atoi(argValue[++i]));
 		} else if (!lastArg && currentArg == "-net-latency") {
@@ -202,6 +208,7 @@ void HandleEarlyMainArgs(int argCount, char** argValue) {
 			SetRNGSeedOffset(static_cast<uint32_t>(std::atoll(argValue[++i])));
 		}
 	}
+	NetLockstep::SetProgramArguments(argCount, argValue);
 	NetLockstep::Connect();
 }
 

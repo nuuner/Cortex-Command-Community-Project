@@ -67,11 +67,27 @@ void ActivityMan::Clear() {
 	m_LaunchIntoEditor = false;
 }
 
+/// Gives the players of the machines in lockstep the same controls, on the made up devices that their input arrives on.
+static void SetUpLockstepControlSchemes() {
+	for (int player = Players::PlayerOne; player <= Players::PlayerTwo; ++player) {
+		InputScheme* controlScheme = g_UInputMan.GetControlScheme(player);
+		controlScheme->SetDevice(InputDevice::DEVICE_MOUSE_KEYB);
+		controlScheme->SetPreset(InputScheme::InputPreset::PresetMouseWASDKeys);
+		DeviceID deviceID;
+		deviceID.mouseKeyboard = {NetLockstep::GetPlayerDeviceID(player), NetLockstep::GetPlayerDeviceID(player)};
+		controlScheme->SetDeviceID(deviceID);
+	}
+}
+
 bool ActivityMan::Initialize() {
 	if (IsSetToLaunchIntoEditor()) {
 		// Evaluate LaunchIntoEditor before LaunchIntoActivity so it takes priority when both are set, otherwise it is ignored and editor is never launched.
 		return SetStartEditorActivitySetToLaunchInto();
 	} else if (!m_SaveGameToLaunch.empty()) {
+		// A game that machines in lockstep carry on from already has its players, but the controls aren't part of it.
+		if (NetLockstep::IsActive()) {
+			SetUpLockstepControlSchemes();
+		}
 		return LoadAndLaunchGame(m_SaveGameToLaunch);
 	} else if (!m_ActivityNameToLaunch.empty()) {
 		return SetStartActivitySetToLaunchInto();
@@ -474,17 +490,12 @@ bool ActivityMan::SetStartActivitySetToLaunchInto() {
 	if (GameActivity* gameActivityToStart = dynamic_cast<GameActivity*>(activityToStart)) {
 		gameActivityToStart->SetStartingGold(gameActivityToStart->GetDefaultGoldMediumDifficulty());
 		if (NetLockstep::IsActive()) {
-			// The two machines each play a team. Their players get the same controls, on the made up devices that their input arrives on.
+			// The two machines each play a team.
 			gameActivityToStart->ClearPlayers(false);
 			for (int player = Players::PlayerOne; player <= Players::PlayerTwo; ++player) {
 				gameActivityToStart->AddPlayer(player, true, Activity::Teams::TeamOne + player, 0);
-				InputScheme* controlScheme = g_UInputMan.GetControlScheme(player);
-				controlScheme->SetDevice(InputDevice::DEVICE_MOUSE_KEYB);
-				controlScheme->SetPreset(InputScheme::InputPreset::PresetMouseWASDKeys);
-				DeviceID deviceID;
-				deviceID.mouseKeyboard = {NetLockstep::GetPlayerDeviceID(player), NetLockstep::GetPlayerDeviceID(player)};
-				controlScheme->SetDeviceID(deviceID);
 			}
+			SetUpLockstepControlSchemes();
 		} else if (gameActivityToStart->GetCPUTeam() == Activity::Teams::NoTeam) {
 			// Activities come set up with just player one, so give them the CPU to play against, unless the Activity decides that by itself.
 			gameActivityToStart->SetCPUTeam(Activity::Teams::TeamTwo);

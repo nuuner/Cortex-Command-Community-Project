@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 namespace RTE {
 
@@ -12,6 +13,7 @@ namespace RTE {
 	/// An update can't begin until the other machine's input for it has arrived, so the simulation stalls when the connection does.
 	/// Messages can get lost on the way, so each one repeats all the input that the other machine hasn't confirmed having, and a lost one is made up for by the next.
 	/// The two machines also compare hashes of their simulation state now and then, to find out if they have stopped matching.
+	/// When they have, the host saves its game and sends the save over, and both machines start again from it and reconnect.
 	/// shortcut: one remote player. Give each player their own connection and input once more are needed.
 	/// shortcut: plain UDP on POSIX sockets, so no Windows and no way through home routers. The linked RakNet would cover both, but it crashes in its own network thread on arm64 macOS as soon as two peers connect.
 	/// shortcut: both machines have to be started with the same Activity, Scene, seed, game data and settings, nothing checks it. Add a handshake that compares them along with the lobby.
@@ -40,6 +42,23 @@ namespace RTE {
 		/// Sets how much of what this machine sends is thrown away, to try out how a worse connection plays.
 		/// @param lossPercent How many of each hundred messages to throw away.
 		static void SetArtificialLoss(int lossPercent) { s_ArtificialLossPercent = std::clamp(lossPercent, 0, 90); }
+
+		/// Sets the host to load both machines from its own state at a simulation update, as it does when they are found to have stopped matching. This is for testing that.
+		/// @param simUpdate The simulation update to do it at.
+		static void SetForcedResyncUpdate(long long simUpdate) { s_ForcedResyncUpdate = simUpdate; }
+
+		/// Sets this machine to throw its simulation off at a simulation update, so that the machines stop matching. This is for testing what happens then.
+		/// @param simUpdate The simulation update to do it at.
+		static void SetForcedDesyncUpdate(long long simUpdate) { s_ForcedDesyncUpdate = simUpdate; }
+
+		/// Sets what the game was started with, for it to start itself again with when the machines have to carry on from the host's game.
+		/// @param argCount Argument count.
+		/// @param argValue Argument values.
+		static void SetProgramArguments(int argCount, char** argValue) { s_ProgramArguments.assign(argValue, argValue + argCount); }
+
+		/// Sets how many times the machines have carried on from the host's game so far. The game passes this on to itself when it starts itself again.
+		/// @param epoch The number of times.
+		static void SetEpoch(int epoch);
 
 		/// Makes the connection that was asked for with SetHostPort or SetJoinAddress, if any. This doesn't return until the other machine is there.
 		static void Connect();
@@ -90,6 +109,9 @@ namespace RTE {
 		static bool s_Active; //!< Whether lockstep is on.
 		static bool s_Desynced; //!< Whether the simulation states stopped matching.
 		static int s_LocalPlayer; //!< Which player this machine is.
+		static std::vector<std::string> s_ProgramArguments; //!< What the game was started with.
+		static long long s_ForcedResyncUpdate; //!< The simulation update at which the host resyncs the machines for testing, or -1.
+		static long long s_ForcedDesyncUpdate; //!< The simulation update at which this machine throws its simulation off for testing, or -1.
 
 		/// Measures how long the connection takes, and fits the input delay of this machine to it. Each machine does this for its own input, without the other having to agree.
 		/// @return The line that asks the other machine to answer for the measurement, when it is time for one.
@@ -109,6 +131,19 @@ namespace RTE {
 		/// Handles a message from the other machine.
 		/// @param text The message.
 		static void HandleMessage(const std::string& text);
+
+		/// Has the host save its game and send the save to the other machine. This doesn't return until the other machine has all of it.
+		/// @return Whether that worked.
+		static bool SendResyncSave();
+
+		/// Handles a part of the host's save arriving.
+		/// @param text The message with the part in it.
+		static void HandleResyncPart(const std::string& text);
+
+		/// Starts the game again from the save that the host made, which gets both machines to the same state again.
+		/// Loading it into the running game wouldn't: what the Lua states and the unique IDs are up to isn't in the save, and is no longer the same on both machines.
+		/// @param epoch How many times the machines have carried on from the host's game, counting this one.
+		static void RestartIntoResyncSave(int epoch);
 
 		/// Compares the state hashes of the two machines for a simulation update, if both are known.
 		/// @param simUpdate The simulation update.

@@ -29,6 +29,8 @@ def main():
     parser.add_argument("--delay", type=int, help="how many sim updates each one has its input held back for, instead of adapting it to the connection")
     parser.add_argument("--loss", type=int, default=0, help="how many of each hundred messages each one throws away instead of sending (default: %(default)s)")
     parser.add_argument("--latency", type=int, default=0, help="how many milliseconds each one holds back what it sends for, which makes for a ping of twice that (default: %(default)s)")
+    parser.add_argument("--force-resync", type=int, metavar="UPDATE", help="have the host load both from its own state at this sim update, as it does when they stop matching")
+    parser.add_argument("--force-desync", type=int, metavar="UPDATE", help="have the joiner throw its simulation off at this sim update, for the two to find out and recover from")
     parser.add_argument("--windowed", action="store_true", help="run both with the game window, audio and real time pacing, instead of headless")
     parser.add_argument("--trace-dir", type=Path, help="where to keep the inputs and traces, instead of a temporary directory")
     parser.add_argument("--timeout", type=int, default=600, help="how many seconds the two can take before they are given up on (default: %(default)s)")
@@ -47,6 +49,10 @@ def main():
             traces.append(trace)
             args = [exe, "-activity", *options.activity, "-sim-updates", str(options.updates), "-quit-when-over", "-input-replay", str(player_input), "-determinism-record", str(trace), *net_args]
             args += ["-net-latency", str(options.latency), "-net-loss", str(options.loss)] + (["-net-delay", str(options.delay)] if options.delay else [])
+            if options.force_resync and name == "host":
+                args += ["-net-force-resync", str(options.force_resync)]
+            if options.force_desync and name == "joiner":
+                args += ["-net-force-desync", str(options.force_desync)]
             if not options.windowed:
                 args.append("-headless")
             processes.append(subprocess.Popen(args, stderr=subprocess.PIPE, text=True, env={**os.environ, "CCCP_SETTINGSPATH": str(settings)}))

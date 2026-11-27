@@ -1,6 +1,8 @@
 #include "NetLockstep.h"
 
+#include "ActivityMan.h"
 #include "MovableMan.h"
+#include "PresetMan.h"
 #include "TimerMan.h"
 
 #include "DeterminismChecker.h"
@@ -11,13 +13,16 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <format>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <random>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -38,6 +43,9 @@ int NetLockstep::s_ArtificialLossPercent = 0;
 bool NetLockstep::s_Active = false;
 bool NetLockstep::s_Desynced = false;
 int NetLockstep::s_LocalPlayer = 0;
+std::vector<std::string> NetLockstep::s_ProgramArguments;
+long long NetLockstep::s_ForcedResyncUpdate = -1;
+long long NetLockstep::s_ForcedDesyncUpdate = -1;
 
 namespace {
 	using Clock = std::chrono::steady_clock;
@@ -55,6 +63,19 @@ namespace {
 	constexpr int c_ResendIntervalMS = 20; //!< How long to wait for the other machine's input before repeating what this machine last sent, in case that got lost.
 	constexpr int c_WaitTimeoutS = 120; //!< How long to wait for the other machine's first input before giving up on it. It has to cover the other machine loading the game.
 	constexpr int c_SilenceTimeoutS = 10; //!< How long the other machine can go without being heard from, once it has been, before it is taken to be gone.
+
+	constexpr size_t c_ResyncPartSize = 1000; //!< How much of the save each message carries, in bytes.
+	constexpr size_t c_MaxResyncSaveSize = 64 * 1024 * 1024; //!< The biggest save that the other machine is believed about, in bytes.
+	constexpr int c_MaxResyncCount = 10; //!< How many times the machines get loaded from the host's state before giving up on keeping them matching.
+	constexpr int c_ResyncTimeoutS = 60; //!< How long sending the save can take before the other machine is given up on.
+
+	int s_Epoch = 0; //!< How many times the machines have carried on from the host's game. Messages say which time they are from, so that ones from before can be told apart.
+	bool s_ResyncIsWanted = false; //!< Whether the machines have stopped matching, and are to be loaded from the host's state.
+	bool s_ResyncHostIsDone = false; //!< Whether the host has said that it knows all of the save has arrived.
+	int s_ResyncSaveEpoch = -1; //!< Which time of carrying on from the host's game the save that has arrived in full is for, or -1 if none has.
+	std::string s_ResyncSave; //!< The save being sent or received.
+	std::vector<bool> s_ResyncPartsDone; //!< Which parts of the save the other machine has confirmed having, or which have arrived.
+	size_t s_ResyncPartsLeft = 0; //!< How many parts of the save are still to be confirmed, or to arrive.
 
 	int s_Socket = -1; //!< The UDP socket that is connected to the other machine.
 	Clock::time_point s_LastHeardFrom; //!< When something last arrived from the other machine.
@@ -92,6 +113,15 @@ namespace {
 	std::atomic<bool> s_SenderThreadRunning = false; //!< Whether the sender thread is to keep going.
 	std::mt19937 s_LossRandom{std::random_device{}()}; //!< Decides which messages the artificial loss throws away. It has nothing to do with the simulation's random numbers.
 
+	/// Gets the name of the save that the machines carry on from. Each running game has its own, since several can be running from the same folder, and it is the same after the game has started itself again.
+	std::string GetResyncSaveName() {
+		return std::format("LockstepResync{}_{}", NetLockstep::GetLocalPlayer() + 1, getpid());
+	}
+
+	std::string GetResyncSavePath() {
+		return g_PresetMan.GetFullModulePath(c_UserScriptedSavesModuleName) + "/" + GetResyncSaveName() + ".ccsave";
+	}
+
 	/// Gets the time on this machine's clock, in microseconds.
 	long long GetClockUS() {
 		return std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count();
@@ -119,6 +149,10 @@ namespace {
 		}
 	}
 } // namespace
+
+void NetLockstep::SetEpoch(int epoch) {
+	s_Epoch = epoch;
+}
 
 void NetLockstep::Connect() {
 	if (s_HostPort.empty() && s_JoinAddress.empty()) {
@@ -246,8 +280,34 @@ void NetLockstep::BeginSimUpdate() {
 	if (!s_Active) {
 		return;
 	}
+	if (s_SimUpdate == 0 && s_Epoch > 0) {
+		// The save this game was started from has been loaded by now, and isn't one the player would want to find among their saved games.
+		std::remove(GetResyncSavePath().c_str());
+	}
+	if (s_LocalPlayer == 0 && s_Epoch == 0 && s_SimUpdate + 1 == s_ForcedResyncUpdate) {
+		s_ResyncIsWanted = true;
+	}
+	if (s_LocalPlayer == 0 && s_ResyncIsWanted) {
+		if (SendResyncSave()) {
+			RestartIntoResyncSave(s_Epoch + 1);
+		} else {
+			std::cerr << "Lockstep: failed to get the other player the game to carry on from, ending at update " << s_SimUpdate << "." << std::endl;
+			s_Desynced = true;
+			System::SetQuit();
+		}
+		return;
+	}
+
 	++s_SimUpdate;
+	if (s_Epoch == 0 && s_SimUpdate == s_ForcedDesyncUpdate) {
+		// Using up a random number is enough to send this machine's simulation its own way.
+		RandomNum();
+	}
 	std::string extraLines = AdaptInputDelay();
+	if (s_ResyncIsWanted) {
+		// Only the host can do something about the machines not matching, so the other one keeps asking it to.
+		extraLines += std::format("{} r\n", s_SimUpdate);
+	}
 
 	// This machine's input since the last update goes to a later update, to give it time to get to the other machine. It can't go to an update that was already said to be complete.
 	long long inputUpdate = std::max(s_SimUpdate + s_InputDelay, s_LocalCompleteThrough + 1);
@@ -283,7 +343,7 @@ void NetLockstep::BeginSimUpdate() {
 	auto waitStart = Clock::now();
 	auto lastSend = waitStart;
 	Receive();
-	while (s_RemoteCompleteThrough < s_SimUpdate && !s_Desynced) {
+	while (s_RemoteCompleteThrough < s_SimUpdate && !s_Desynced && s_ResyncSaveEpoch < 0) {
 		// The other machine can't be heard from while it loads the game, which is why it gets longer before it has been.
 		bool silentForTooLong = Clock::now() - std::max(waitStart, s_LastHeardFrom) > std::chrono::seconds(s_RemoteCompleteThrough > 0 ? c_SilenceTimeoutS : c_WaitTimeoutS);
 		if (s_PeerIsGone || silentForTooLong) {
@@ -300,6 +360,10 @@ void NetLockstep::BeginSimUpdate() {
 		pollfd pollInfo{s_Socket, POLLIN, 0};
 		poll(&pollInfo, 1, 1);
 		Receive();
+	}
+	if (s_ResyncSaveEpoch >= 0) {
+		RestartIntoResyncSave(s_ResyncSaveEpoch);
+		return;
 	}
 	// A wait of less than half an update is just this machine keeping in step with the other one, and doesn't hold anything up.
 	if (double waitedMS = std::chrono::duration<double, std::milli>(Clock::now() - waitStart).count(); waitedMS > g_TimerMan.GetDeltaTimeMS() * 0.5) {
@@ -379,6 +443,7 @@ void NetLockstep::Stop() {
 		s_Socket = -1;
 	}
 	std::cerr << "Lockstep: ran " << s_SimUpdate << " updates, " << s_MatchedHashCount << " state hashes matched" << (s_Desynced ? ", and then the machines DESYNCED." : ".") << std::endl;
+	std::cerr << "Lockstep: the machines carried on from the host's game " << s_Epoch << " times." << std::endl;
 	std::cerr << std::format("Lockstep: {} updates waited for the other player's input, for {:.0f} ms in total.", s_StalledUpdateCount, s_StalledMS) << std::endl;
 	std::cerr << std::format("Lockstep: input delay ended at {} updates, with a ping of about {:.0f} ms. {} of {} messages were thrown away.", s_InputDelay, s_PingSamplesMS.empty() ? 0.0 : s_PingSamplesMS.back(), s_LostMessageCount, s_SentMessageCount) << std::endl;
 	s_Active = false;
@@ -386,7 +451,8 @@ void NetLockstep::Stop() {
 
 void NetLockstep::SendState(const std::string& extraLines) {
 	// How far this machine has the other one's input, so that the other one can stop repeating it.
-	std::string message = std::format("{} a\n", s_RemoteCompleteThrough);
+	// Which count of the simulation updates this is about comes first, so that a message from before the machines last loaded the same game can be told apart.
+	std::string message = std::format("{} e\n{} a\n", s_Epoch, s_RemoteCompleteThrough);
 
 	// All of this machine's input that the other one may not have, oldest first. What doesn't fit goes in a later message, once the other machine has confirmed having some of this.
 	long long sentThrough = s_RemoteAckedThrough;
@@ -445,6 +511,8 @@ void NetLockstep::Receive() {
 			SendNow("welcome");
 		} else if (text == "bye") {
 			s_PeerIsGone = true;
+		} else if (text.starts_with("S ") || text.starts_with("K ") || text.starts_with("D ")) {
+			HandleResyncPart(text);
 		} else if (text != "welcome") {
 			HandleMessage(text);
 		}
@@ -468,7 +536,15 @@ void NetLockstep::HandleMessage(const std::string& text) {
 		// The other machine is not to be trusted with how much gets kept around, or with which kinds of input get applied.
 		bool updateIsNear = simUpdate > s_SimUpdate - c_MaxUpdatesAhead && simUpdate < s_SimUpdate + c_MaxUpdatesAhead;
 
-		if (content == "a") {
+		if (content == "e") {
+			if (simUpdate != s_Epoch) {
+				return;
+			}
+		} else if (content == "r") {
+			if (s_LocalPlayer == 0) {
+				s_ResyncIsWanted = true;
+			}
+		} else if (content == "a") {
 			if (simUpdate > s_RemoteAckedThrough && simUpdate <= s_LocalCompleteThrough) {
 				s_RemoteAckedThrough = simUpdate;
 				s_UnconfirmedLines.erase(s_UnconfirmedLines.begin(), s_UnconfirmedLines.upper_bound(simUpdate));
@@ -511,6 +587,172 @@ void NetLockstep::HandleMessage(const std::string& text) {
 	}
 }
 
+bool NetLockstep::SendResyncSave() {
+	std::cerr << "Lockstep: getting the other player the game to carry on from, at update " << s_SimUpdate << "..." << std::endl;
+	if (!g_ActivityMan.SaveCurrentGame(GetResyncSaveName())) {
+		return false;
+	}
+	// The save gets written in the background, and has to be all there before it can be read back.
+	if (g_ActivityMan.GetSaveGameTask().valid()) {
+		g_ActivityMan.GetSaveGameTask().wait();
+	}
+	std::ifstream saveFile(GetResyncSavePath(), std::ios::binary);
+	s_ResyncSave.assign(std::istreambuf_iterator<char>(saveFile), std::istreambuf_iterator<char>());
+	if (s_ResyncSave.empty() || s_ResyncSave.size() > c_MaxResyncSaveSize) {
+		return false;
+	}
+
+	// From here on the other machine's messages about the simulation updates are of no use, so they get told apart by which time this is.
+	int resyncEpoch = s_Epoch + 1;
+	s_ResyncIsWanted = false;
+	size_t partCount = (s_ResyncSave.size() + c_ResyncPartSize - 1) / c_ResyncPartSize;
+	s_ResyncPartsDone.assign(partCount, false);
+	s_ResyncPartsLeft = partCount;
+	std::vector<Clock::time_point> partLastSent(partCount);
+
+	// shortcut: the parts go out as fast as the other machine confirms them, without regard for how much the connection can take. Pace them once saves take long to send over real connections.
+	auto sendStart = Clock::now();
+	while (s_ResyncPartsLeft > 0) {
+		if (s_PeerIsGone || Clock::now() - sendStart > std::chrono::seconds(c_ResyncTimeoutS)) {
+			return false;
+		}
+		// A part is sent again when the other machine has had the time to confirm it and hasn't.
+		double pingMS = s_PingSamplesMS.empty() ? 50.0 : *std::max_element(s_PingSamplesMS.begin(), s_PingSamplesMS.end());
+		auto resendAfter = std::chrono::milliseconds(static_cast<int>(pingMS * 2.0) + 50);
+		int sentCount = 0;
+		for (size_t part = 0; part < partCount && sentCount < 64; ++part) {
+			if (!s_ResyncPartsDone[part] && Clock::now() - partLastSent[part] > resendAfter) {
+				SendToPeer(std::format("S {} {} {}\n", resyncEpoch, part, s_ResyncSave.size()) + s_ResyncSave.substr(part * c_ResyncPartSize, c_ResyncPartSize));
+				partLastSent[part] = Clock::now();
+				++sentCount;
+			}
+		}
+		pollfd pollInfo{s_Socket, POLLIN, 0};
+		poll(&pollInfo, 1, 2);
+		Receive();
+	}
+	s_ResyncSave.clear();
+	// The other machine keeps confirming parts until it hears that this one has heard about them all, so that is said a few times in case it gets lost.
+	for (int repeat = 0; repeat < 5; ++repeat) {
+		SendToPeer(std::format("D {} 0\n", resyncEpoch));
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	return true;
+}
+
+void NetLockstep::HandleResyncPart(const std::string& text) {
+	size_t headerEnd = text.find('\n');
+	std::istringstream header(text.substr(0, headerEnd));
+	char kind = 0;
+	int epoch = -1;
+	long long part = -1;
+	header >> kind >> epoch >> part;
+	if (header.fail() || part < 0) {
+		return;
+	}
+
+	if (kind == 'D') {
+		s_ResyncHostIsDone = s_ResyncHostIsDone || (s_LocalPlayer == 1 && epoch == s_ResyncSaveEpoch);
+		return;
+	}
+	if (kind == 'K') {
+		// The other machine has this part of the save.
+		if (s_LocalPlayer == 0 && epoch == s_Epoch + 1 && static_cast<size_t>(part) < s_ResyncPartsDone.size() && !s_ResyncPartsDone[part]) {
+			s_ResyncPartsDone[part] = true;
+			--s_ResyncPartsLeft;
+		}
+		return;
+	}
+	if (s_LocalPlayer != 1 || headerEnd == std::string::npos) {
+		return;
+	}
+	if (epoch == s_ResyncSaveEpoch) {
+		// This machine already has all of this save, but its confirmation of this part got lost.
+		SendToPeer(std::format("K {} {}\n", epoch, part));
+		return;
+	}
+	size_t saveSize = 0;
+	header >> saveSize;
+	std::string_view data = std::string_view(text).substr(headerEnd + 1);
+	size_t partCount = (saveSize + c_ResyncPartSize - 1) / c_ResyncPartSize;
+	size_t partStart = static_cast<size_t>(part) * c_ResyncPartSize;
+	// The other machine is not to be trusted with how much memory gets used, or with where in it things get put.
+	if (header.fail() || epoch != s_Epoch + 1 || saveSize == 0 || saveSize > c_MaxResyncSaveSize || static_cast<size_t>(part) >= partCount || data.size() != std::min(c_ResyncPartSize, saveSize - partStart)) {
+		return;
+	}
+
+	if (s_ResyncSave.size() != saveSize) {
+		s_ResyncSave.assign(saveSize, '\0');
+		s_ResyncPartsDone.assign(partCount, false);
+		s_ResyncPartsLeft = partCount;
+	}
+	if (!s_ResyncPartsDone[part]) {
+		s_ResyncSave.replace(partStart, data.size(), data);
+		s_ResyncPartsDone[part] = true;
+		--s_ResyncPartsLeft;
+	}
+	SendToPeer(std::format("K {} {}\n", epoch, part));
+
+	if (s_ResyncPartsLeft == 0) {
+		std::ofstream saveFile(GetResyncSavePath(), std::ios::binary | std::ios::trunc);
+		saveFile.write(s_ResyncSave.data(), static_cast<std::streamsize>(s_ResyncSave.size()));
+		saveFile.close();
+		s_ResyncSave.clear();
+		s_ResyncPartsDone.clear();
+		s_ResyncSaveEpoch = epoch;
+	}
+}
+
+void NetLockstep::RestartIntoResyncSave(int epoch) {
+	std::cerr << "Lockstep: starting again from the host's game." << std::endl;
+	if (s_LocalPlayer == 1) {
+		// The host may still be waiting to hear that the last parts of the save got here, and sends those again until it does, so this machine stays around to confirm them until the host says it is done.
+		auto waitStart = Clock::now();
+		while (!s_ResyncHostIsDone && !s_PeerIsGone && Clock::now() - waitStart < std::chrono::seconds(5)) {
+			pollfd pollInfo{s_Socket, POLLIN, 0};
+			poll(&pollInfo, 1, 5);
+			Receive();
+		}
+	}
+
+	// The game is started with what it was started with before, except that it loads the save, and knows which time this is.
+	std::vector<std::string> arguments;
+	for (size_t i = 0; i < s_ProgramArguments.size(); ++i) {
+		const std::string& argument = s_ProgramArguments[i];
+		if (argument == "-activity") {
+			i += 3;
+		} else if (argument == "-save" || argument == "-net-epoch" || argument == "-net-force-resync" || argument == "-net-force-desync") {
+			i += 1;
+		} else {
+			arguments.emplace_back(argument);
+		}
+	}
+	arguments.insert(arguments.end(), {"-save", GetResyncSaveName(), "-net-epoch", std::to_string(epoch)});
+	std::vector<char*> argumentPointers;
+	for (std::string& argument: arguments) {
+		argumentPointers.emplace_back(argument.data());
+	}
+	argumentPointers.emplace_back(nullptr);
+
+	// Nothing of this run of the game gets to finish up after this, so what can't be lost is finished up here.
+	if (s_SenderThread.joinable()) {
+		s_SenderThreadRunning = false;
+		s_SenderThread.join();
+	}
+	SendHeldBackMessages(true);
+	close(s_Socket);
+	s_Socket = -1;
+	DeterminismChecker::Stop();
+	InputRecorder::Stop();
+	std::cerr.flush();
+
+	execv(argumentPointers[0], argumentPointers.data());
+	// This is only reached if the game couldn't be started again.
+	std::cerr << "Lockstep: failed to start the game again!" << std::endl;
+	s_Desynced = true;
+	System::SetQuit();
+}
+
 void NetLockstep::CompareStateHashes(long long simUpdate) {
 	std::map<long long, uint64_t>& localHashes = s_StateHashes[s_LocalPlayer];
 	std::map<long long, uint64_t>& remoteHashes = s_StateHashes[1 - s_LocalPlayer];
@@ -521,10 +763,14 @@ void NetLockstep::CompareStateHashes(long long simUpdate) {
 	}
 	if (localHash->second == remoteHash->second) {
 		++s_MatchedHashCount;
-	} else if (!s_Desynced) {
-		s_Desynced = true;
+	} else if (!s_Desynced && !s_ResyncIsWanted) {
 		std::cerr << std::format("Lockstep: DESYNC! The machines stopped matching by update {}. This one has {:016x}, the other one has {:016x}.", simUpdate, localHash->second, remoteHash->second) << std::endl;
-		System::SetQuit();
+		if (s_Epoch < c_MaxResyncCount) {
+			s_ResyncIsWanted = true;
+		} else {
+			s_Desynced = true;
+			System::SetQuit();
+		}
 	}
 	// Hashes get repeated, and ones from before this update could still turn up, so those are done with as well.
 	s_LastComparedHashUpdate = std::max(s_LastComparedHashUpdate, simUpdate);
