@@ -15,10 +15,13 @@ Run this from the game's working directory. For example:
     python Tools/determinism_test.py --seeds 0 1 2 3
     python Tools/determinism_test.py --activity GAScripted "AI Battle" "Ketanot Hills" --until-over
     python Tools/determinism_test.py --seeds 0 1 2 3 4 5 6 7 --jobs 4
+    python Tools/determinism_test.py --activity GAScripted "Skirmish Defense" "Ketanot Hills" --random-input 1
+    python Tools/determinism_test.py --activity GAScripted "Skirmish Defense" "Ketanot Hills" --input my_session.input
 """
 
 import argparse
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -47,6 +50,37 @@ def write_test_settings(path):
     lines = [line for line in lines if line.split("=")[0].strip() not in TEST_SETTINGS]
     # The first line is the class name, which the settings have to come after.
     lines[1:1] = [f"\t{name} = {value}" for name, value in TEST_SETTINGS.items()]
+    path.write_text("\n".join(lines) + "\n")
+
+
+# The keys that the random input presses, as SDL scancodes: A to Z, 1 to 0, Space, Tab, the arrows, and left Ctrl and Shift.
+# Escape and the function keys are left out, since they pause the game or do things outside the sim.
+RANDOM_INPUT_KEYS = [*range(4, 40), 43, 44, 79, 80, 81, 82, 224, 225]
+
+
+def write_random_input(path, seed, updates):
+    """Writes an input file of a player mashing the keyboard and waving the mouse about, for the game to play back with -input-replay."""
+    rng = random.Random(seed)
+    # This stays well inside the smallest window the game can have.
+    width, height = 600, 400
+    x, y = width // 2, height // 2
+    held_keys, held_buttons = set(), set()
+    lines = []
+    for update in range(1, updates + 1):
+        if rng.random() < 0.1:
+            key = rng.choice(RANDOM_INPUT_KEYS)
+            held_keys ^= {key}
+            lines.append(f"{update} k 0 {key} {int(key in held_keys)}")
+        if rng.random() < 0.05:
+            button = rng.choice([1, 2, 3])
+            held_buttons ^= {button}
+            lines.append(f"{update} b 0 {button} {int(button in held_buttons)}")
+        if rng.random() < 0.5:
+            dx, dy = rng.randint(-20, 20), rng.randint(-20, 20)
+            x, y = min(max(x + dx, 0), width - 1), min(max(y + dy, 0), height - 1)
+            lines.append(f"{update} m 0 {x} {y} {dx} {dy}")
+        if rng.random() < 0.02:
+            lines.append(f"{update} w 0 {rng.choice([-1, 1])}")
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -108,6 +142,8 @@ def main():
     parser.add_argument("--jobs", type=int, default=1, help="how many scenarios to run at the same time (default: %(default)s)")
     parser.add_argument("--windowed", action="store_true", help="do the runs with the game window, audio and real time pacing, instead of headless")
     parser.add_argument("--verify-windowed", action="store_true", help="also verify a windowed run against the recorded one, to check that the sim doesn't depend on drawing, audio or frame pacing")
+    parser.add_argument("--input", type=Path, action="append", default=[], metavar="FILE", help="an input file recorded with -input-record to play each scenario back with, can be given several times")
+    parser.add_argument("--random-input", type=int, nargs="+", default=[], metavar="SEED", help="seeds to make random player input from, to play each scenario back with")
     parser.add_argument("--save", action="append", default=[], metavar="NAME", help="a saved game to run, can be given several times")
     parser.add_argument("--activity", action="append", default=[], nargs=3, metavar=("TYPE", "ACTIVITY", "SCENE"), help="an Activity and Scene to run, can be given several times")
     parser.add_argument("--trace-dir", type=Path, help="where to keep the recorded traces, instead of a temporary directory")
@@ -128,6 +164,15 @@ def main():
     with tempfile.TemporaryDirectory() as temp_dir:
         trace_dir = (options.trace_dir or Path(temp_dir)).resolve()
         trace_dir.mkdir(parents=True, exist_ok=True)
+
+        inputs = [(f"input {path.name}", path.resolve()) for path in options.input]
+        for seed in options.random_input:
+            path = trace_dir / f"random_{seed}.input"
+            write_random_input(path, seed, options.updates or 1000)
+            inputs.append((f"random input {seed}", path))
+        if inputs:
+            scenarios = [(f"{name}, {input_name}", [*scenario_args, "-input-replay", str(path)]) for name, scenario_args in scenarios for input_name, path in inputs]
+
         with ThreadPoolExecutor(options.jobs) as pool:
             results = list(pool.map(lambda scenario: test_scenario(*scenario, options, trace_dir), scenarios))
         failed = [name for (name, scenario_args), passed in zip(scenarios, results) if not passed]

@@ -53,6 +53,7 @@
 #include "MusicMan.h"
 #include "System.h"
 #include "DeterminismChecker.h"
+#include "InputRecorder.h"
 
 #include "RenderTarget.h"
 #include "tracy/Tracy.hpp"
@@ -182,6 +183,10 @@ void HandleEarlyMainArgs(int argCount, char** argValue) {
 			DeterminismChecker::StartRecording(argValue[++i]);
 		} else if (!lastArg && currentArg == "-determinism-verify") {
 			DeterminismChecker::StartVerifying(argValue[++i]);
+		} else if (!lastArg && currentArg == "-input-record") {
+			InputRecorder::StartRecording(argValue[++i]);
+		} else if (!lastArg && currentArg == "-input-replay") {
+			InputRecorder::StartReplaying(argValue[++i]);
 		} else if (!lastArg && currentArg == "-seed") {
 			SetRNGSeedOffset(static_cast<uint32_t>(std::atoll(argValue[++i])));
 		}
@@ -276,7 +281,10 @@ void PollSDLEvents() {
 			case SDL_EVENT_JOYSTICK_BUTTON_UP :
 			case SDL_EVENT_JOYSTICK_ADDED :
 			case SDL_EVENT_JOYSTICK_REMOVED :
-				g_UInputMan.HandleInputEvent(sdlEvent);
+				// The recorded input stands in for the real devices while replaying.
+				if (!InputRecorder::IsReplaying()) {
+					g_UInputMan.HandleInputEvent(sdlEvent);
+				}
 				break;
 			default:
 				break;
@@ -393,6 +401,7 @@ void RunGameLoop() {
 
 			g_LuaMan.Update();
 
+			InputRecorder::BeginSimUpdate();
 			g_UInputMan.Update();
 
 			g_FrameMan.Update();
@@ -423,6 +432,10 @@ void RunGameLoop() {
 			g_UInputMan.EndFrame();
 
 			if (s_SimUpdatesToQuitAfter >= 0 && g_TimerMan.GetSimUpdateCount() >= s_SimUpdatesToQuitAfter) {
+				System::SetQuit();
+				break;
+			}
+			if (InputRecorder::ReplayIsOver()) {
 				System::SetQuit();
 				break;
 			}
@@ -543,6 +556,7 @@ int main(int argc, char** argv) {
 	g_ThreadMan.GetBackgroundThreadPool().wait_for_tasks();
 
 	DeterminismChecker::Stop();
+	InputRecorder::Stop();
 
 	DestroyManagers();
 

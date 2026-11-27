@@ -11,6 +11,7 @@
 #include "RenderTarget.h"
 #include "GLResourceMan.h"
 #include "System.h"
+#include "InputRecorder.h"
 
 #include "GLCheck.h"
 #include <SDL3/SDL.h>
@@ -656,8 +657,7 @@ bool WindowMan::ChangeResolutionToMultiDisplayFullscreen(float resMultiplier) {
 }
 
 void WindowMan::DisplaySwitchIn(SDL_Window* windowThatShouldTakeInputFocus) const {
-	g_UInputMan.DisableMouseMoving(false);
-	g_UInputMan.DisableKeys(false);
+	InputRecorder::HandleFocusChange(true);
 
 	if (!m_MultiDisplayWindows.empty()) {
 		for (const auto& window: m_MultiDisplayWindows) {
@@ -672,8 +672,7 @@ void WindowMan::DisplaySwitchIn(SDL_Window* windowThatShouldTakeInputFocus) cons
 }
 
 void WindowMan::DisplaySwitchOut() const {
-	g_UInputMan.DisableMouseMoving(true);
-	g_UInputMan.DisableKeys(true);
+	InputRecorder::HandleFocusChange(false);
 
 	SDL_ShowCursor();
 	// Sometimes the cursor will not be visible after disabling relative mode. Setting it to nullptr forces it to redraw, though this doesn't always work either.

@@ -148,7 +148,8 @@ namespace RTE {
 	protected:
 		std::chrono::steady_clock::time_point m_StartTime; //!< The point in real time when the simulation (re)started.
 		long long m_TicksPerSecond; //!< The frequency of ticks each second, ie the resolution of the timer.
-		long long m_RealTimeTicks; //!< The number of actual microseconds counted so far.
+		long long m_RealTimeTicks; //!< The number of microseconds of real time counted so far, as the Timers see it. This is the wall time, except while input is recorded or played back, when it moves with the simulation instead.
+		long long m_WallTimeTicks; //!< The number of actual microseconds counted so far, which paces the simulation.
 		long long m_SimTimeTicks; //!< The number of simulation time ticks counted so far.
 		long long m_SimUpdateCount; //!< The number of whole simulation updates have been made since reset.
 		long long m_SimAccumulator; //!< Simulation time accumulator keeps track of how much actual time has passed and is chunked into whole DeltaTime:s upon UpdateSim.

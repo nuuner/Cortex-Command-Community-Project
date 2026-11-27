@@ -12,6 +12,7 @@
 #include "Icon.h"
 #include "GameActivity.h"
 #include "System.h"
+#include "InputRecorder.h"
 
 #include <SDL3/SDL.h>
 #include <array>
@@ -845,6 +846,12 @@ bool UInputMan::GetJoystickDirectionState(int whichJoy, int whichAxis, int which
 }
 
 void UInputMan::HandleInputEvent(const SDL_Event& inputEvent) {
+	// Mouse motion that came in while it was disabled isn't recorded, so recorded motion is always meant to be handled.
+	if (inputEvent.type == SDL_EVENT_MOUSE_MOTION && m_DisableMouseMoving && !InputRecorder::IsReplaying()) {
+		return;
+	}
+	InputRecorder::Record(inputEvent);
+
 	switch (inputEvent.type) {
 		case SDL_EVENT_KEY_UP:
 		case SDL_EVENT_KEY_DOWN: {
@@ -900,10 +907,6 @@ void UInputMan::HandleInputEvent(const SDL_Event& inputEvent) {
 			break;
 		}
 		case SDL_EVENT_MOUSE_MOTION: {
-			if (m_DisableMouseMoving) {
-				break;
-			}
-
 			Mouse& mouse = m_MouseStates[inputEvent.motion.which];
 			mouse.id = inputEvent.motion.which;
 			mouse.position = {inputEvent.motion.x, inputEvent.motion.y};

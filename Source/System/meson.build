@@ -20,6 +20,7 @@ sources += files(
 'RTETools.cpp',
 'System.cpp',
 'DeterminismChecker.cpp',
+'InputRecorder.cpp',
 'InputMapping.cpp',
 'PathFinder.cpp',
 'DataModule.cpp',
