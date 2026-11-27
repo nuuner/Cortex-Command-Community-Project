@@ -555,7 +555,8 @@ void UInputMan::ForceMouseWithinPlayerScreen(bool force, int whichPlayer) {
 		int screenWidth = g_FrameMan.GetPlayerFrameBufferWidth(whichPlayer) * resMultiplier;
 		int screenHeight = g_FrameMan.GetPlayerFrameBufferHeight(whichPlayer) * resMultiplier;
 
-		switch (g_ActivityMan.GetActivity()->ScreenOfPlayer(whichPlayer)) {
+		// In lockstep every player's screen is the whole window.
+		switch (NetLockstep::IsActive() ? 0 : g_ActivityMan.GetActivity()->ScreenOfPlayer(whichPlayer)) {
 			case 0:
 				m_PlayerScreenMouseBounds = {0, 0, screenWidth, screenHeight};
 				break;

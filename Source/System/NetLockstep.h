@@ -34,6 +34,10 @@ namespace RTE {
 		/// @return Whether the simulation states stopped matching.
 		static bool HasDesynced() { return s_Desynced; }
 
+		/// Gets which player this machine is.
+		/// @return The player.
+		static int GetLocalPlayer() { return s_LocalPlayer; }
+
 		/// Gets the ID of the made up mouse and keyboard that a player's input arrives on. It is the same on both machines.
 		/// @param player The player.
 		/// @return The device ID.

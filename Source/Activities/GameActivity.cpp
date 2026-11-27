@@ -31,6 +31,7 @@
 #include "BuyMenuGUI.h"
 #include "SceneEditorGUI.h"
 #include "GUIBanner.h"
+#include "NetLockstep.h"
 
 #define BRAINLZWIDTHDEFAULT 640
 
@@ -755,7 +756,8 @@ int GameActivity::Start() {
 		////////////////////////////////////
 		// GUI split screen setup
 		// If there are split screens, set up the GUIs to draw and their mouses to point correctly
-		if (g_FrameMan.GetScreenCount() > 1) {
+		// In lockstep every player's screen is the whole window, so the GUIs all stay in its upper left corner.
+		if (g_FrameMan.GetScreenCount() > 1 && !NetLockstep::IsActive()) {
 			// Screen 1 Always upper left corner
 			if (ScreenOfPlayer(player) == 0) {
 				m_pEditorGUI[player]->SetPosOnScreen(0, 0);

@@ -77,7 +77,7 @@ namespace RTE {
 #pragma region Split-Screen Handling
 		/// Gets whether the screen is split horizontally across the screen, ie as two splitscreens one above the other.
 		/// @return Whether or not screen has a horizontal split.
-		bool GetHSplit() const { return m_HSplit; }
+		bool GetHSplit() const;
 
 		/// Sets whether the screen is split horizontally across the screen, ie as two splitscreens one above the other.
 		/// @param hSplit Whether or not to have a horizontal split.
@@ -85,7 +85,7 @@ namespace RTE {
 
 		/// Gets whether the screen is split vertically across the screen, ie as two splitscreens side by side.
 		/// @return Whether screen has a vertical split.
-		bool GetVSplit() const { return m_VSplit; }
+		bool GetVSplit() const;
 
 		/// Sets whether the screen is split vertically across the screen, ie as two splitscreens side by side.
 		/// @param vSplit Whether or not to have a vertical split.

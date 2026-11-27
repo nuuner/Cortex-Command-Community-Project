@@ -28,6 +28,8 @@
 #include "glad/gl.h"
 #include "Draw.h"
 
+#include "NetLockstep.h"
+
 #include "tracy/Tracy.hpp"
 #include "tracy/TracyOpenGL.hpp"
 #include <SDL3_image/SDL_image.h>
@@ -230,6 +232,15 @@ void FrameMan::Update() {
 	}
 }
 
+bool FrameMan::GetHSplit() const {
+	// In lockstep each machine only shows its own player, so the screens of the players are all the size of the whole window and don't get laid out next to each other.
+	return m_HSplit && !NetLockstep::IsActive();
+}
+
+bool FrameMan::GetVSplit() const {
+	return m_VSplit && !NetLockstep::IsActive();
+}
+
 void FrameMan::ResetSplitScreens(bool hSplit, bool vSplit) {
 	// Override screen splitting according to settings if needed
 	if ((hSplit || vSplit) && !(hSplit && vSplit) && m_TwoPlayerVSplit) {
@@ -242,11 +253,13 @@ void FrameMan::ResetSplitScreens(bool hSplit, bool vSplit) {
 
 	// Create the splitscreen buffer
 	if (m_HSplit || m_VSplit) {
-		m_PlayerScreen8 = std::unique_ptr<BITMAP, BitmapDeleter>(create_bitmap_ex(8, g_WindowMan.GetResX() / (m_VSplit ? 2 : 1), g_WindowMan.GetResY() / (m_HSplit ? 2 : 1)));
+		int playerScreenWidth = g_WindowMan.GetResX() / (GetVSplit() ? 2 : 1);
+		int playerScreenHeight = g_WindowMan.GetResY() / (GetHSplit() ? 2 : 1);
+		m_PlayerScreen8 = std::unique_ptr<BITMAP, BitmapDeleter>(create_bitmap_ex(8, playerScreenWidth, playerScreenHeight));
 		clear_to_color(m_PlayerScreen8.get(), 0);
 		set_clip_state(m_PlayerScreen8.get(), 1);
 
-		m_PlayerScreen = std::make_unique<RenderTarget>(FloatRect(0, 0, g_WindowMan.GetResX() / (m_VSplit ? 2 : 1), g_WindowMan.GetResY() / (m_HSplit ? 2 : 1)), FloatRect(0, 0, g_WindowMan.GetResX() / (m_VSplit ? 2 : 1), g_WindowMan.GetResY() / (m_HSplit ? 2 : 1)));
+		m_PlayerScreen = std::make_unique<RenderTarget>(FloatRect(0, 0, playerScreenWidth, playerScreenHeight), FloatRect(0, 0, playerScreenWidth, playerScreenHeight));
 
 		// Update these to represent the split screens
 		m_PlayerScreenWidth = m_PlayerScreen->GetSize().w;
@@ -830,7 +843,13 @@ void FrameMan::Draw() {
 
 	const Activity* pActivity = g_ActivityMan.GetActivity();
 
+	// In lockstep the other players' screens are still there for the simulation, but only this machine's player gets drawn.
+	int onlyScreenToDraw = (NetLockstep::IsActive() && pActivity) ? pActivity->ScreenOfPlayer(NetLockstep::GetLocalPlayer()) : -1;
+
 	for (int playerScreen = 0; playerScreen < screenCount; ++playerScreen) {
+		if (onlyScreenToDraw >= 0 && playerScreen != onlyScreenToDraw) {
+			continue;
+		}
 		screenRelativeEffects.clear();
 		screenRelativeGlowBoxes.clear();
 		rlEnableColorBlend();
@@ -889,7 +908,7 @@ void FrameMan::Draw() {
 		Vector screenOffset;
 
 		// If we are dealing with split screens, then deal with the fact that we need to draw the player screens to different locations on the final buffer
-		if (screenCount > 1) {
+		if (screenCount > 1 && onlyScreenToDraw < 0) {
 			UpdateScreenOffsetForSplitScreen(playerScreen, screenOffset);
 		}
 
@@ -914,11 +933,11 @@ void FrameMan::Draw() {
 	g_SceneMan.ClearSeenPixels();
 
 	// Draw separating lines for split-screens
-	if (m_HSplit) {
+	if (GetHSplit()) {
 		hline(m_BackBuffer8.get(), 0, (m_BackBuffer8->h / 2) - 1, m_BackBuffer8->w - 1, m_AlmostBlackColor);
 		hline(m_BackBuffer8.get(), 0, (m_BackBuffer8->h / 2), m_BackBuffer8->w - 1, m_AlmostBlackColor);
 	}
-	if (m_VSplit) {
+	if (GetVSplit()) {
 		vline(m_BackBuffer8.get(), (m_BackBuffer8->w / 2) - 1, 0, m_BackBuffer8->h - 1, m_AlmostBlackColor);
 		vline(m_BackBuffer8.get(), (m_BackBuffer8->w / 2), 0, m_BackBuffer8->h - 1, m_AlmostBlackColor);
 	}
