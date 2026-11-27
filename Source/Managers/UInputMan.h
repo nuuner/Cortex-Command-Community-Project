@@ -348,8 +348,6 @@ namespace RTE {
 
 		void ClearMouseButtons();
 
-		/// Lets go of every key and mouse button, and puts every mouse back to where it starts out. Machines in lockstep do this before loading the same game, since they may not have got through the same input by then.
-
 		/// Gets whether the mouse wheel has been moved past the threshold limit in either direction this frame.
 		/// @return The direction the mouse wheel has been moved which is past that threshold. 0 means not past, negative means moved down, positive means moved up.
 		int MouseWheelMoved() const { return m_MouseStates.at(0).wheelChange; }
