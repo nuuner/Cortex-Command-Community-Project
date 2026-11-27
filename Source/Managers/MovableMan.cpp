@@ -21,6 +21,7 @@
 #include "LuaMan.h"
 #include "ThreadMan.h"
 #include "DeterminismChecker.h"
+#include "InputRecorder.h"
 #include "System.h"
 
 #include "tracy/Tracy.hpp"
@@ -28,6 +29,22 @@
 #include <execution>
 
 using namespace RTE;
+
+/// Runs a function for each of the threaded Lua states, and waits for them all to be done.
+/// The states normally get a thread each. Their scripts can read and change what the scripts of the other states are working on though, which then comes out differently from run to run,
+/// so they are run one after the other instead when the simulation has to play out the same elsewhere.
+/// @param luaStateCount How many threaded Lua states there are.
+/// @param function The function to run, which takes the range of states to run for.
+template <typename Function>
+static void RunOnEachThreadedLuaState(size_t luaStateCount, Function&& function) {
+	if (InputRecorder::IsActive()) {
+		for (size_t luaState = 0; luaState < luaStateCount; ++luaState) {
+			function(static_cast<int>(luaState), static_cast<int>(luaState) + 1);
+		}
+	} else {
+		g_ThreadMan.GetPriorityThreadPool().parallelize_loop(luaStateCount, function).wait();
+	}
+}
 
 AlarmEvent::AlarmEvent(const Vector& pos, int team, float range) :
     m_ScenePos(pos),
@@ -1383,23 +1400,21 @@ void MovableMan::Update() {
 		g_LuaMan.SetThreadLuaStateOverride(nullptr);
 
 		LuaStatesArray& luaStates = g_LuaMan.GetThreadedScriptStates();
-		g_ThreadMan.GetPriorityThreadPool().parallelize_loop(luaStates.size(),
-		                                                     [&](int start, int end) {
-			                                                     RTEAssert(start + 1 == end, "Threaded script state being updated across multiple threads!");
-			                                                     LuaStateWrapper& luaState = luaStates[start];
-			                                                     g_LuaMan.SetThreadLuaStateOverride(&luaState);
-			                                                     luaState.SetRunningThreadedUpdate(true);
+		RunOnEachThreadedLuaState(luaStates.size(), [&](int start, int end) {
+			RTEAssert(start + 1 == end, "Threaded script state being updated across multiple threads!");
+			LuaStateWrapper& luaState = luaStates[start];
+			g_LuaMan.SetThreadLuaStateOverride(&luaState);
+			luaState.SetRunningThreadedUpdate(true);
 
-			                                                     for (MovableObject* mo: luaState.GetRegisteredMOs()) {
-				                                                     if (ValidMO(mo->GetRootParent())) {
-					                                                     mo->RunScriptedFunctionInAppropriateScripts(threadedUpdate, false, false, {}, {}, {});
-				                                                     }
-			                                                     }
+			for (MovableObject* mo: luaState.GetRegisteredMOs()) {
+				if (ValidMO(mo->GetRootParent())) {
+					mo->RunScriptedFunctionInAppropriateScripts(threadedUpdate, false, false, {}, {}, {});
+				}
+			}
 
-			                                                     luaState.SetRunningThreadedUpdate(false);
-			                                                     g_LuaMan.SetThreadLuaStateOverride(nullptr);
-		                                                     })
-		    .wait();
+			luaState.SetRunningThreadedUpdate(false);
+			g_LuaMan.SetThreadLuaStateOverride(nullptr);
+		});
 
 		SortAddedMOs();
 	}
@@ -1820,21 +1835,19 @@ void MovableMan::UpdateControllers() {
 		g_LuaMan.SetThreadLuaStateOverride(nullptr);
 
 		LuaStatesArray& luaStates = g_LuaMan.GetThreadedScriptStates();
-		g_ThreadMan.GetPriorityThreadPool().parallelize_loop(luaStates.size(),
-		                                                     [&](int start, int end) {
-			                                                     RTEAssert(start + 1 == end, "Threaded script state being updated across multiple threads!");
-			                                                     LuaStateWrapper& luaState = luaStates[start];
-			                                                     g_LuaMan.SetThreadLuaStateOverride(&luaState);
-			                                                     luaState.SetRunningAI(true);
-			                                                     for (Actor* actor: m_Actors) {
-				                                                     if (actor->GetLuaState() == &luaState && actor->GetController()->ShouldUpdateAIThisFrame()) {
-					                                                     actor->RunScriptedFunctionInAppropriateScripts("ThreadedUpdateAI", false, true, {}, {}, {});
-				                                                     }
-			                                                     }
-			                                                     luaState.SetRunningAI(false);
-			                                                     g_LuaMan.SetThreadLuaStateOverride(nullptr);
-		                                                     })
-		    .wait();
+		RunOnEachThreadedLuaState(luaStates.size(), [&](int start, int end) {
+			RTEAssert(start + 1 == end, "Threaded script state being updated across multiple threads!");
+			LuaStateWrapper& luaState = luaStates[start];
+			g_LuaMan.SetThreadLuaStateOverride(&luaState);
+			luaState.SetRunningAI(true);
+			for (Actor* actor: m_Actors) {
+				if (actor->GetLuaState() == &luaState && actor->GetController()->ShouldUpdateAIThisFrame()) {
+					actor->RunScriptedFunctionInAppropriateScripts("ThreadedUpdateAI", false, true, {}, {}, {});
+				}
+			}
+			luaState.SetRunningAI(false);
+			g_LuaMan.SetThreadLuaStateOverride(nullptr);
+		});
 
 		SortAddedMOs();
 
