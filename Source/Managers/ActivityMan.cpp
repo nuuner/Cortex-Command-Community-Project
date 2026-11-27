@@ -12,6 +12,7 @@
 #include "PostProcessMan.h"
 #include "MetaMan.h"
 #include "ThreadMan.h"
+#include "NetLockstep.h"
 
 #include "GAScripted.h"
 #include "SLTerrain.h"
@@ -472,8 +473,20 @@ bool ActivityMan::SetStartActivitySetToLaunchInto() {
 	Activity* activityToStart = dynamic_cast<Activity*>(activityPreset->Clone());
 	if (GameActivity* gameActivityToStart = dynamic_cast<GameActivity*>(activityToStart)) {
 		gameActivityToStart->SetStartingGold(gameActivityToStart->GetDefaultGoldMediumDifficulty());
-		// Activities come set up with just player one, so give them the CPU to play against, unless the Activity decides that by itself.
-		if (gameActivityToStart->GetCPUTeam() == Activity::Teams::NoTeam) {
+		if (NetLockstep::IsActive()) {
+			// The two machines each play a team. Their players get the same controls, on the made up devices that their input arrives on.
+			gameActivityToStart->ClearPlayers(false);
+			for (int player = Players::PlayerOne; player <= Players::PlayerTwo; ++player) {
+				gameActivityToStart->AddPlayer(player, true, Activity::Teams::TeamOne + player, 0);
+				InputScheme* controlScheme = g_UInputMan.GetControlScheme(player);
+				controlScheme->SetDevice(InputDevice::DEVICE_MOUSE_KEYB);
+				controlScheme->SetPreset(InputScheme::InputPreset::PresetMouseWASDKeys);
+				DeviceID deviceID;
+				deviceID.mouseKeyboard = {NetLockstep::GetPlayerDeviceID(player), NetLockstep::GetPlayerDeviceID(player)};
+				controlScheme->SetDeviceID(deviceID);
+			}
+		} else if (gameActivityToStart->GetCPUTeam() == Activity::Teams::NoTeam) {
+			// Activities come set up with just player one, so give them the CPU to play against, unless the Activity decides that by itself.
 			gameActivityToStart->SetCPUTeam(Activity::Teams::TeamTwo);
 		}
 	}

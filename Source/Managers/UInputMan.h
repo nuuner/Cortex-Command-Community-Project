@@ -172,39 +172,43 @@ namespace RTE {
 
 		/// Gets the state of the Left Ctrl key.
 		/// @return The state of the Left Ctrl key.
-		bool FlagLCtrlState() const { return (SDL_GetModState() & SDL_KMOD_LCTRL) > 0; }
+		/// Gets which modifier keys are held. This goes by the recorded or shared input instead of the real keyboard when the simulation has to play out the same elsewhere.
+		/// @return The held modifier keys.
+		SDL_Keymod GetModState() const;
+
+		bool FlagLCtrlState() const { return (GetModState() & SDL_KMOD_LCTRL) > 0; }
 
 		/// Gets the state of the Right Ctrl key.
 		/// @return The state of the Right Ctrl key.
-		bool FlagRCtrlState() const { return (SDL_GetModState() & SDL_KMOD_RCTRL) > 0; }
+		bool FlagRCtrlState() const { return (GetModState() & SDL_KMOD_RCTRL) > 0; }
 
 		/// Gets the state of either Ctrl key.
 		/// @return The state of either Ctrl key.
-		bool FlagCtrlState() const { return (SDL_GetModState() & SDL_KMOD_CTRL) > 0; }
+		bool FlagCtrlState() const { return (GetModState() & SDL_KMOD_CTRL) > 0; }
 
 		/// Gets the state of the Left Alt key.
 		/// @return The state of the Alt key.
-		bool FlagLAltState() const { return (SDL_GetModState() & SDL_KMOD_LALT) > 0; }
+		bool FlagLAltState() const { return (GetModState() & SDL_KMOD_LALT) > 0; }
 
 		/// Gets the state of the Right Alt key.
 		/// @return The state of the Right Alt key.
-		bool FlagRAltState() const { return (SDL_GetModState() & (SDL_KMOD_RALT | SDL_KMOD_MODE)) > 0; }
+		bool FlagRAltState() const { return (GetModState() & (SDL_KMOD_RALT | SDL_KMOD_MODE)) > 0; }
 
 		/// Gets the state of either Alt key.
 		/// @return The state of either Alt key.
-		bool FlagAltState() const { return (SDL_GetModState() & SDL_KMOD_ALT | SDL_KMOD_MODE) > 0; }
+		bool FlagAltState() const { return (GetModState() & SDL_KMOD_ALT | SDL_KMOD_MODE) > 0; }
 
 		/// Gets the state of the Left Shift key.
 		/// @return The state of the Left Shift key.
-		bool FlagLShiftState() const { return (SDL_GetModState() & SDL_KMOD_LSHIFT) > 0; }
+		bool FlagLShiftState() const { return (GetModState() & SDL_KMOD_LSHIFT) > 0; }
 
 		/// Gets the state of the Right Shift key.
 		/// @return The state of the Right Shift key.
-		bool FlagRShiftState() const { return (SDL_GetModState() & SDL_KMOD_RSHIFT) > 0; }
+		bool FlagRShiftState() const { return (GetModState() & SDL_KMOD_RSHIFT) > 0; }
 
 		/// Gets the state of either Shift key.
 		/// @return The state of either Shift key.
-		bool FlagShiftState() const { return (SDL_GetModState() & SDL_KMOD_SHIFT) > 0; }
+		bool FlagShiftState() const { return (GetModState() & SDL_KMOD_SHIFT) > 0; }
 #pragma endregion
 
 #pragma region Keyboard Handling

@@ -13,6 +13,7 @@
 #include "GameActivity.h"
 #include "System.h"
 #include "InputRecorder.h"
+#include "NetLockstep.h"
 
 #include <SDL3/SDL.h>
 #include <array>
@@ -287,6 +288,25 @@ bool UInputMan::AnyKeyPress(SDL_KeyboardID keyboardID) const {
 		}
 	}
 	return false;
+}
+
+SDL_Keymod UInputMan::GetModState() const {
+	if (!InputRecorder::IsActive()) {
+		return SDL_GetModState();
+	}
+	// What the real keyboard is doing right now isn't part of the recorded or shared input, so go by the keys that are.
+	SDL_Keymod modState = SDL_KMOD_NONE;
+	if (auto keyboard = m_KeyboardStates.find(0); keyboard != m_KeyboardStates.end()) {
+		static constexpr std::pair<SDL_Scancode, SDL_Keymod> modifierKeys[] = {
+		    {SDL_SCANCODE_LCTRL, SDL_KMOD_LCTRL}, {SDL_SCANCODE_RCTRL, SDL_KMOD_RCTRL}, {SDL_SCANCODE_LSHIFT, SDL_KMOD_LSHIFT}, {SDL_SCANCODE_RSHIFT, SDL_KMOD_RSHIFT},
+		    {SDL_SCANCODE_LALT, SDL_KMOD_LALT}, {SDL_SCANCODE_RALT, SDL_KMOD_RALT}, {SDL_SCANCODE_LGUI, SDL_KMOD_LGUI}, {SDL_SCANCODE_RGUI, SDL_KMOD_RGUI}};
+		for (const auto& [scancode, modifier]: modifierKeys) {
+			if (keyboard->second.keyStates[scancode]) {
+				modState |= modifier;
+			}
+		}
+	}
+	return modState;
 }
 
 int UInputMan::MouseUsedByPlayer() const {
@@ -848,6 +868,9 @@ bool UInputMan::GetJoystickDirectionState(int whichJoy, int whichAxis, int which
 void UInputMan::HandleInputEvent(const SDL_Event& inputEvent) {
 	// Mouse motion that came in while it was disabled isn't recorded, so recorded motion is always meant to be handled.
 	if (inputEvent.type == SDL_EVENT_MOUSE_MOTION && m_DisableMouseMoving && !InputRecorder::IsReplaying()) {
+		return;
+	}
+	if (NetLockstep::CaptureLocalInput(inputEvent)) {
 		return;
 	}
 	InputRecorder::Record(inputEvent);

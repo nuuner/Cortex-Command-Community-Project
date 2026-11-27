@@ -10,6 +10,7 @@
 #include "UInputMan.h"
 #include "System.h"
 #include "DeterminismChecker.h"
+#include "InputRecorder.h"
 
 using namespace RTE;
 
@@ -98,6 +99,11 @@ int SettingsMan::Initialize() {
 	}
 
 	return failureCode;
+}
+
+bool SettingsMan::GetForceImmediatePathingRequestCompletion() const {
+	// Pathing requests otherwise complete after however many sim updates the pathfinding threads happen to take, which no recording or other machine could match.
+	return m_ForceImmediatePathingRequestCompletion || InputRecorder::IsActive();
 }
 
 void SettingsMan::UpdateSettingsFile() const {

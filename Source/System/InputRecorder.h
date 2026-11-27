@@ -25,11 +25,20 @@ namespace RTE {
 
 		/// Gets whether input is being recorded or played back. The simulation can't depend on anything that the input file doesn't hold while it is, such as how much real time has passed.
 		/// @return Whether input is being recorded or played back.
-		static bool IsActive() { return s_Recording || s_Replaying; }
+		static bool IsActive();
 
 		/// Gets whether input is being played back from a file.
 		/// @return Whether input is being played back.
 		static bool IsReplaying() { return s_Replaying; }
+
+		/// Writes an input event out as a line of the input file, without the update number.
+		/// @param inputEvent The input event.
+		/// @return The line, or an empty string for events that aren't recorded.
+		static std::string EventToLine(const SDL_Event& inputEvent);
+
+		/// Applies a line of input, as if the input had just come from the real devices. Lines that don't make sense are ignored, since they can come from the network.
+		/// @param line The line, without its update number.
+		static void ApplyLine(const std::string& line);
 
 		/// Records an input event that UInputMan is about to handle. Does nothing unless recording.
 		/// @param inputEvent The input event.
@@ -62,10 +71,6 @@ namespace RTE {
 
 		/// Reads the next line to play back from the replay file.
 		static void ReadNextReplayLine();
-
-		/// Applies a recorded line, as if the input had just come from the real devices.
-		/// @param line The line, without its update number.
-		static void ApplyLine(const std::string& line);
 
 		/// Applies a change of input focus to UInputMan, and records it.
 		/// @param focused Whether the window now has focus.

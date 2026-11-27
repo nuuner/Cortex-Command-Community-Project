@@ -23,9 +23,7 @@ GUIInputWrapper::GUIInputWrapper(int whichPlayer, bool keyJoyMouseCursor) :
 }
 
 void GUIInputWrapper::ConvertKeyEvent(SDL_Scancode sdlKey, int guilibKey, float elapsedS) {
-	int nKeys;
-	const bool* sdlKeyState = SDL_GetKeyboardState(&nKeys);
-	if (sdlKeyState[sdlKey]) {
+	if (g_UInputMan.KeyHeld(sdlKey)) {
 		if (m_KeyHoldDuration[guilibKey] < 0) {
 			m_KeyboardBuffer[guilibKey] = GUIInput::Pushed;
 			m_KeyHoldDuration[guilibKey] = 0;
@@ -108,7 +106,7 @@ void GUIInputWrapper::UpdateKeyboardInput(float keyElapsedTime) {
 	ConvertKeyEvent(SDL_SCANCODE_PAGEDOWN, GUIInput::Key_PageDown, keyElapsedTime);
 
 	m_Modifier = GUIInput::ModNone;
-	SDL_Keymod keyShifts = SDL_GetModState();
+	SDL_Keymod keyShifts = g_UInputMan.GetModState();
 
 	if (keyShifts & SDL_KMOD_SHIFT) {
 		m_Modifier |= GUIInput::ModShift;

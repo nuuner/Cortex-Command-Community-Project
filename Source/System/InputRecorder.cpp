@@ -2,6 +2,8 @@
 
 #include "UInputMan.h"
 
+#include "NetLockstep.h"
+
 #include "RTEError.h"
 
 #include <cstdlib>
@@ -40,35 +42,41 @@ void InputRecorder::StartReplaying(const std::string& filePath) {
 	ReadNextReplayLine();
 }
 
+bool InputRecorder::IsActive() {
+	return s_Recording || s_Replaying || NetLockstep::IsActive();
+}
+
+std::string InputRecorder::EventToLine(const SDL_Event& inputEvent) {
+	switch (inputEvent.type) {
+		case SDL_EVENT_KEY_UP:
+		case SDL_EVENT_KEY_DOWN:
+			return std::format("k {} {} {}", inputEvent.key.which, static_cast<int>(inputEvent.key.scancode), static_cast<int>(inputEvent.key.down));
+		case SDL_EVENT_MOUSE_MOTION:
+			return std::format("m {} {} {} {} {}", inputEvent.motion.which, inputEvent.motion.x, inputEvent.motion.y, inputEvent.motion.xrel, inputEvent.motion.yrel);
+		case SDL_EVENT_MOUSE_BUTTON_UP:
+		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+			return std::format("b {} {} {}", inputEvent.button.which, static_cast<int>(inputEvent.button.button), static_cast<int>(inputEvent.button.down));
+		case SDL_EVENT_MOUSE_WHEEL:
+			return std::format("w {} {}", inputEvent.wheel.which, inputEvent.wheel.direction == SDL_MOUSEWHEEL_NORMAL ? inputEvent.wheel.y : -inputEvent.wheel.y);
+		case SDL_EVENT_TEXT_INPUT:
+			return std::format("t {}", inputEvent.text.text);
+		default:
+			return "";
+	}
+}
+
 void InputRecorder::Record(const SDL_Event& inputEvent) {
 	if (!s_Recording) {
 		return;
 	}
-	switch (inputEvent.type) {
-		case SDL_EVENT_KEY_UP:
-		case SDL_EVENT_KEY_DOWN:
-			s_PendingLines.emplace_back(std::format("k {} {} {}", inputEvent.key.which, static_cast<int>(inputEvent.key.scancode), static_cast<int>(inputEvent.key.down)));
-			break;
-		case SDL_EVENT_MOUSE_MOTION:
-			s_PendingLines.emplace_back(std::format("m {} {} {} {} {}", inputEvent.motion.which, inputEvent.motion.x, inputEvent.motion.y, inputEvent.motion.xrel, inputEvent.motion.yrel));
-			break;
-		case SDL_EVENT_MOUSE_BUTTON_UP:
-		case SDL_EVENT_MOUSE_BUTTON_DOWN:
-			s_PendingLines.emplace_back(std::format("b {} {} {}", inputEvent.button.which, static_cast<int>(inputEvent.button.button), static_cast<int>(inputEvent.button.down)));
-			break;
-		case SDL_EVENT_MOUSE_WHEEL:
-			s_PendingLines.emplace_back(std::format("w {} {}", inputEvent.wheel.which, inputEvent.wheel.direction == SDL_MOUSEWHEEL_NORMAL ? inputEvent.wheel.y : -inputEvent.wheel.y));
-			break;
-		case SDL_EVENT_TEXT_INPUT:
-			s_PendingLines.emplace_back(std::format("t {}", inputEvent.text.text));
-			break;
-		default:
-			break;
+	if (std::string line = EventToLine(inputEvent); !line.empty()) {
+		s_PendingLines.emplace_back(std::move(line));
 	}
 }
 
 void InputRecorder::HandleFocusChange(bool focused) {
-	if (!s_Replaying) {
+	// Only input that every machine gets can reach the simulation when it runs in lockstep, and the focus of this machine's window isn't.
+	if (!s_Replaying && !NetLockstep::IsActive()) {
 		ApplyFocusChange(focused);
 	}
 }
@@ -130,6 +138,9 @@ void InputRecorder::ApplyLine(const std::string& line) {
 		case 'k': {
 			int scancode = 0;
 			values >> inputEvent.key.which >> scancode >> down;
+			if (scancode < 0 || scancode >= SDL_SCANCODE_COUNT) {
+				return;
+			}
 			inputEvent.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
 			inputEvent.key.scancode = static_cast<SDL_Scancode>(scancode);
 			inputEvent.key.down = down;
@@ -142,6 +153,9 @@ void InputRecorder::ApplyLine(const std::string& line) {
 		case 'b': {
 			int button = 0;
 			values >> inputEvent.button.which >> button >> down;
+			if (button < SDL_BUTTON_LEFT || button > SDL_BUTTON_RIGHT) {
+				return;
+			}
 			inputEvent.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
 			inputEvent.button.button = static_cast<Uint8>(button);
 			inputEvent.button.down = down;
@@ -166,6 +180,9 @@ void InputRecorder::ApplyLine(const std::string& line) {
 			return;
 		default:
 			return;
+	}
+	if (values.fail()) {
+		return;
 	}
 	g_UInputMan.HandleInputEvent(inputEvent);
 }

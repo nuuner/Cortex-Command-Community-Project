@@ -54,6 +54,7 @@
 #include "System.h"
 #include "DeterminismChecker.h"
 #include "InputRecorder.h"
+#include "NetLockstep.h"
 
 #include "RenderTarget.h"
 #include "tracy/Tracy.hpp"
@@ -187,6 +188,10 @@ void HandleEarlyMainArgs(int argCount, char** argValue) {
 			InputRecorder::StartRecording(argValue[++i]);
 		} else if (!lastArg && currentArg == "-input-replay") {
 			InputRecorder::StartReplaying(argValue[++i]);
+		} else if (!lastArg && currentArg == "-net-host") {
+			NetLockstep::Host(argValue[++i]);
+		} else if (!lastArg && currentArg == "-net-join") {
+			NetLockstep::Join(argValue[++i]);
 		} else if (!lastArg && currentArg == "-seed") {
 			SetRNGSeedOffset(static_cast<uint32_t>(std::atoll(argValue[++i])));
 		}
@@ -402,6 +407,7 @@ void RunGameLoop() {
 			g_LuaMan.Update();
 
 			InputRecorder::BeginSimUpdate();
+			NetLockstep::BeginSimUpdate();
 			g_UInputMan.Update();
 
 			g_FrameMan.Update();
@@ -557,13 +563,14 @@ int main(int argc, char** argv) {
 
 	DeterminismChecker::Stop();
 	InputRecorder::Stop();
+	NetLockstep::Stop();
 
 	DestroyManagers();
 
 	allegro_exit();
 	SDL_Quit();
 
-	return DeterminismChecker::HasDiverged() ? EXIT_FAILURE : EXIT_SUCCESS;
+	return (DeterminismChecker::HasDiverged() || NetLockstep::HasDesynced()) ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
 #ifdef _WIN32
