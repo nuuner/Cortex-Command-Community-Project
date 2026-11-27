@@ -94,6 +94,9 @@
     <ClInclude Include="Source\System\InputRecorder.h">
       <Filter>System</Filter>
     </ClInclude>
+    <ClInclude Include="Source\System\NetLockstep.h">
+      <Filter>System</Filter>
+    </ClInclude>
     <ClInclude Include="Source\System\System.h">
       <Filter>System</Filter>
     </ClInclude>
@@ -692,6 +695,9 @@
       <Filter>System</Filter>
     </ClCompile>
     <ClCompile Include="Source\System\InputRecorder.cpp">
+      <Filter>System</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\System\NetLockstep.cpp">
       <Filter>System</Filter>
     </ClCompile>
     <ClCompile Include="Source\System\System.cpp">

@@ -194,6 +194,8 @@ void HandleEarlyMainArgs(int argCount, char** argValue) {
 			NetLockstep::SetJoinAddress(argValue[++i]);
 		} else if (!lastArg && currentArg == "-net-delay") {
 			NetLockstep::SetInputDelay(std::atoll(argValue[++i]));
+		} else if (!lastArg && currentArg == "-net-loss") {
+			NetLockstep::SetArtificialLoss(std::atoi(argValue[++i]));
 		} else if (!lastArg && currentArg == "-net-latency") {
 			NetLockstep::SetArtificialLatency(std::atoi(argValue[++i]));
 		} else if (!lastArg && currentArg == "-seed") {

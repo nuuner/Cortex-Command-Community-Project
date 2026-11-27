@@ -2,24 +2,18 @@
 
 #include "SDL3/SDL_events.h"
 
-#include <chrono>
 #include <algorithm>
-#include <cstdint>
-#include <deque>
-#include <atomic>
-#include <map>
-#include <mutex>
-#include <thread>
 #include <string>
-#include <vector>
 
 namespace RTE {
 
 	/// Runs the simulation in lockstep with another instance of the game over the network. Both instances run the whole simulation, and only send each other their player's input.
 	/// The input of each machine is held back for a few simulation updates, so that it gets to the other one in time for both to apply it in the same update.
 	/// An update can't begin until the other machine's input for it has arrived, so the simulation stalls when the connection does.
+	/// Messages can get lost on the way, so each one repeats all the input that the other machine hasn't confirmed having, and a lost one is made up for by the next.
 	/// The two machines also compare hashes of their simulation state now and then, to find out if they have stopped matching.
-	/// shortcut: one remote player over a TCP connection, on POSIX sockets. Move to RakNet, which is already linked, once more players, Windows or NAT punch-through are needed.
+	/// shortcut: one remote player. Give each player their own connection and input once more are needed.
+	/// shortcut: plain UDP on POSIX sockets, so no Windows and no way through home routers. The linked RakNet would cover both, but it crashes in its own network thread on arm64 macOS as soon as two peers connect.
 	/// shortcut: both machines have to be started with the same Activity, Scene, seed, game data and settings, nothing checks it. Add a handshake that compares them along with the lobby.
 	class NetLockstep {
 
@@ -32,7 +26,7 @@ namespace RTE {
 		/// @param address The address and port of the host, as "address:port".
 		static void SetJoinAddress(const std::string& address) { s_JoinAddress = address; }
 
-		/// Sets how many simulation updates input is held back for, instead of having each machine adapt it to the connection as it goes. The host decides this for both machines.
+		/// Sets how many simulation updates this machine's input is held back for, instead of having it adapt to the connection as it goes.
 		/// @param inputDelay The number of simulation updates.
 		static void SetInputDelay(long long inputDelay) {
 			s_InputDelay = std::clamp(inputDelay, 1LL, c_MaxInputDelay);
@@ -42,6 +36,10 @@ namespace RTE {
 		/// Sets how long everything this machine sends is held back for, to try out how a slower connection plays.
 		/// @param latencyMS The time to hold it back for, in milliseconds. A ping is twice this, when both machines are set to it.
 		static void SetArtificialLatency(int latencyMS) { s_ArtificialLatencyMS = std::max(0, latencyMS); }
+
+		/// Sets how much of what this machine sends is thrown away, to try out how a worse connection plays.
+		/// @param lossPercent How many of each hundred messages to throw away.
+		static void SetArtificialLoss(int lossPercent) { s_ArtificialLossPercent = std::clamp(lossPercent, 0, 90); }
 
 		/// Makes the connection that was asked for with SetHostPort or SetJoinAddress, if any. This doesn't return until the other machine is there.
 		static void Connect();
@@ -76,91 +74,44 @@ namespace RTE {
 		/// Sends this machine's input, waits for the other machine's input for this update, and applies the input of both.
 		static void BeginSimUpdate();
 
-		/// Closes the connection, after giving the other machine a moment to finish.
+		/// Closes the connection.
 		static void Stop();
 
 	private:
-		static constexpr int c_PlayerCount = 2; //!< How many machines, and so players, there are.
 		static constexpr long long c_MaxInputDelay = 30; //!< The most simulation updates that input can be held back for.
-		static constexpr long long c_PingInterval = 30; //!< How many simulation updates there are between measurements of how long the connection takes.
-		static constexpr size_t c_PingSampleCount = 10; //!< How many of the latest measurements the input delay goes by. It goes by the worst of them.
-		static constexpr long long c_ShrinkInterval = 60; //!< The fewest simulation updates there can be between changes of the input delay when it is shrinking.
-		static constexpr long long c_StallAllowanceDuration = 600; //!< How many simulation updates each extra update of input delay that the other machine asked for is kept for.
-		static constexpr long long c_HashInterval = 30; //!< How many simulation updates there are between the state hashes that get compared.
-		static constexpr int c_WaitTimeoutS = 120; //!< How long to wait for the other machine's input before giving up on it. It has to cover the other machine loading the game.
 		static constexpr Uint32 c_VirtualDeviceBase = 1000; //!< The mouse and keyboard ID of the first player. Each player gets a made up device, which is the same on both machines.
 
 		static std::string s_HostPort; //!< The port to host on, if this machine is to host.
 		static std::string s_JoinAddress; //!< The address to join, if this machine is to join.
-		static long long s_InputDelay; //!< How many simulation updates input is held back for. The joiner gets this from the host.
+		static long long s_InputDelay; //!< How many simulation updates this machine's input is held back for.
 		static bool s_InputDelayIsFixed; //!< Whether the input delay was set, and so isn't adapted to the connection.
-		static bool s_LeaveInputUpdateOpen; //!< Whether the input delay shrinks by one after this simulation update. The next update's input then goes to the same update as this one's, so that update can't be said to be complete yet.
-		static long long s_LastInputDelayChange; //!< The simulation update that the input delay last changed in.
-		static long long s_StallAllowance; //!< How many simulation updates of input delay are added because the other machine had to wait for this one's input.
-		static long long s_LastStallAllowanceChange; //!< The simulation update that the stall allowance last changed in.
-		static long long s_LastStallNotice; //!< The simulation update that this machine last told the other one that it had to wait in.
-		static std::deque<double> s_PingSamplesMS; //!< The latest measurements of how long a message takes to get to the other machine and back, in milliseconds.
-		static bool s_InputDelayIsKnown; //!< Whether the host's input delay has arrived, on the joiner.
 		static int s_ArtificialLatencyMS; //!< How long everything this machine sends is held back for, in milliseconds.
-		static std::deque<std::pair<std::chrono::steady_clock::time_point, std::string>> s_HeldBackMessages; //!< What is being held back for the artificial latency, with when each is to be sent.
-		static std::recursive_mutex s_SendMutex; //!< Guards sending and what is being held back, which the sender thread shares with the main thread.
-		static std::thread s_SenderThread; //!< Sends what is being held back when its time comes, so that the artificial latency doesn't also wait for the next simulation update.
-		static std::atomic<bool> s_SenderThreadRunning; //!< Whether the sender thread is to keep going.
-		static long long s_StalledUpdateCount; //!< How many simulation updates had to wait for the other machine's input.
-		static double s_StalledMS; //!< How long simulation updates have waited for the other machine's input in total, in milliseconds.
-
+		static int s_ArtificialLossPercent; //!< How many of each hundred messages this machine sends are thrown away.
 		static bool s_Active; //!< Whether lockstep is on.
 		static bool s_Desynced; //!< Whether the simulation states stopped matching.
-		static bool s_ApplyingInput; //!< Whether input is being handed back to UInputMan, and so shouldn't be captured.
-		static int s_Socket; //!< The connection to the other machine, or -1 once it is gone.
 		static int s_LocalPlayer; //!< Which player this machine is.
-		static long long s_SimUpdate; //!< How many simulation updates have begun.
-		static long long s_RemoteCompleteThrough; //!< The last simulation update that all of the other machine's input has arrived for.
-		static long long s_MatchedHashCount; //!< How many state hashes have been compared and matched.
-		static std::vector<std::string> s_PendingLines; //!< This machine's input since the last simulation update began.
-		static std::map<long long, std::vector<std::string>> s_InputLines[c_PlayerCount]; //!< The input of each player, by the simulation update it gets applied in.
-		static std::map<long long, uint64_t> s_StateHashes[c_PlayerCount]; //!< The state hashes of each machine that haven't been compared yet, by simulation update.
-		static std::string s_ReceiveBuffer; //!< What has arrived from the other machine but isn't a whole line yet.
-
-		/// Sets up the connection once it is made.
-		/// @param socket The connected socket.
-		/// @param localPlayer Which player this machine is.
-		static void Start(int socket, int localPlayer);
-
-		/// Waits for the other machine to connect, and plays as player one.
-		static void Host();
-
-		/// Connects to the hosting machine, and plays as player two.
-		static void Join();
 
 		/// Measures how long the connection takes, and fits the input delay of this machine to it. Each machine does this for its own input, without the other having to agree.
-		static void AdaptInputDelay();
+		/// @return The line that asks the other machine to answer for the measurement, when it is time for one.
+		static std::string AdaptInputDelay();
 
-		/// Sends text to the other machine, after the artificial latency if there is any.
-		/// @param text The text to send.
-		static void Send(const std::string& text);
+		/// Sends the other machine everything it may still be missing: the input it hasn't confirmed having, how far this machine has its input, and the latest state hashes.
+		/// @param extraLines Lines that only get sent this once, since nothing depends on them getting there.
+		static void SendState(const std::string& extraLines = "");
 
-		/// Sends text to the other machine right away. Drops the connection if that fails.
-		/// @param text The text to send.
-		static void SendNow(const std::string& text);
+		/// Sends a message to the other machine, after the artificial latency and loss if there are any.
+		/// @param text The message.
+		static void SendToPeer(const std::string& text);
 
-		/// Sends what has been held back for long enough.
-		/// @param everything Whether to send all of it, no matter how long it has been held back for.
-		static void SendHeldBackMessages(bool everything = false);
+		/// Reads the messages that have arrived from the other machine.
+		static void Receive();
 
-		/// Reads what has arrived from the other machine. Drops the connection if it has closed.
-		/// @param timeoutMS How long to wait for something to arrive, in milliseconds.
-		static void Receive(int timeoutMS);
-
-		/// Handles a line from the other machine.
-		/// @param line The line.
-		static void HandleRemoteLine(const std::string& line);
+		/// Handles a message from the other machine.
+		/// @param text The message.
+		static void HandleMessage(const std::string& text);
 
 		/// Compares the state hashes of the two machines for a simulation update, if both are known.
 		/// @param simUpdate The simulation update.
 		static void CompareStateHashes(long long simUpdate);
-
-		/// Closes the connection.
-		static void Disconnect();
 	};
 } // namespace RTE

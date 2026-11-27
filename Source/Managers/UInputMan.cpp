@@ -1202,7 +1202,8 @@ void UInputMan::UpdateMouseInput() {
 	}
 
 	// Only mess with the mouse pos if the original mouse position is not above the screen and may be grabbing the title bar of the game window
-	if (g_WindowMan.AnyWindowHasFocus() && !m_DisableMouseMoving && (!m_TrapMousePos || m_EnableMultiMouseKeyboard)) {
+	// Keeping the mouse within the player's screen also moves the mouse positions that the simulation goes by, so it can't be up to this machine's window having focus when the simulation has to play out the same elsewhere.
+	if ((g_WindowMan.AnyWindowHasFocus() || InputRecorder::IsActive()) && !m_DisableMouseMoving && (!m_TrapMousePos || m_EnableMultiMouseKeyboard)) {
 		// The mouse cursor is visible and can move about the screen/window, but it should still be contained within the mouse player's part of the window
 		for (int player = PlayerOne; player < MaxPlayerCount; player++) {
 			if (m_ControlScheme[player].GetDevice() == InputDevice::DEVICE_MOUSE_KEYB) {
