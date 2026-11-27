@@ -1,6 +1,8 @@
 #include "NetLockstep.h"
 
+#include "Actor.h"
 #include "ActivityMan.h"
+#include "LuaMan.h"
 #include "MovableMan.h"
 #include "PresetMan.h"
 #include "TimerMan.h"
@@ -15,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <format>
 #include <fstream>
@@ -43,7 +46,6 @@ int NetLockstep::s_ArtificialLossPercent = 0;
 bool NetLockstep::s_Active = false;
 bool NetLockstep::s_Desynced = false;
 int NetLockstep::s_LocalPlayer = 0;
-std::vector<std::string> NetLockstep::s_ProgramArguments;
 long long NetLockstep::s_ForcedResyncUpdate = -1;
 long long NetLockstep::s_ForcedDesyncUpdate = -1;
 
@@ -64,18 +66,27 @@ namespace {
 	constexpr int c_WaitTimeoutS = 120; //!< How long to wait for the other machine's first input before giving up on it. It has to cover the other machine loading the game.
 	constexpr int c_SilenceTimeoutS = 10; //!< How long the other machine can go without being heard from, once it has been, before it is taken to be gone.
 
-	constexpr size_t c_ResyncPartSize = 1000; //!< How much of the save each message carries, in bytes.
-	constexpr size_t c_MaxResyncSaveSize = 64 * 1024 * 1024; //!< The biggest save that the other machine is believed about, in bytes.
-	constexpr int c_MaxResyncCount = 10; //!< How many times the machines get loaded from the host's state before giving up on keeping them matching.
-	constexpr int c_ResyncTimeoutS = 60; //!< How long sending the save can take before the other machine is given up on.
+	constexpr size_t c_BlobPartSize = 1000; //!< How much of something big each message carries, in bytes.
+	constexpr size_t c_MaxBlobSize = 64 * 1024 * 1024; //!< The biggest thing that the other machine is believed about, in bytes.
+	constexpr int c_MaxReloadCount = 10; //!< How many times the machines get rebuilt from the host's game before giving up on keeping them matching.
+	constexpr int c_CorrectionTimeoutS = 60; //!< How long correcting the other machine can take before it is given up on.
+	constexpr char c_PatchBlob = 'P'; //!< What the host's state for the other machine to set its own to starts with.
+	constexpr char c_ReloadBlob = 'L'; //!< What the host's game for both machines to rebuild theirs from starts with.
 
-	int s_Epoch = 0; //!< How many times the machines have carried on from the host's game. Messages say which time they are from, so that ones from before can be told apart.
-	bool s_ResyncIsWanted = false; //!< Whether the machines have stopped matching, and are to be loaded from the host's state.
-	bool s_ResyncHostIsDone = false; //!< Whether the host has said that it knows all of the save has arrived.
-	int s_ResyncSaveEpoch = -1; //!< Which time of carrying on from the host's game the save that has arrived in full is for, or -1 if none has.
-	std::string s_ResyncSave; //!< The save being sent or received.
-	std::vector<bool> s_ResyncPartsDone; //!< Which parts of the save the other machine has confirmed having, or which have arrived.
-	size_t s_ResyncPartsLeft = 0; //!< How many parts of the save are still to be confirmed, or to arrive.
+	int s_Epoch = 0; //!< How many times the machines have been rebuilt from the host's game. Messages say which time they are from, so that ones from before can be told apart.
+	bool s_CorrectionIsWanted = false; //!< Whether the machines have stopped matching, and the other one is to be corrected from the host's state.
+	bool s_ReloadIsForced = false; //!< Whether the next correction is to rebuild the machines from the host's game, without first trying to do with less.
+	long long s_CorrectionUpdate = 0; //!< The simulation update that the host corrects the other machine at, or 0 if it isn't about to. The host holds its input for it back until then, so that the other machine can't get past it.
+	int s_PatchCount = 0; //!< How many times the other machine's state was set to the host's.
+
+	int s_LastBlobID = 0; //!< The number of the last thing the host sent, or that arrived here in full.
+	int s_IncomingBlobID = 0; //!< The number of the thing that is arriving.
+	std::string s_Blob; //!< What is being sent or is arriving.
+	std::vector<bool> s_BlobPartsDone; //!< Which parts of it the other machine has confirmed having, or which have arrived.
+	size_t s_BlobPartsLeft = 0; //!< How many parts of it are still to be confirmed, or to arrive.
+	std::string s_ReceivedBlob; //!< What has arrived in full and is yet to be used, which has to wait for the simulation update it is for.
+	int s_VerdictBlobID = 0; //!< The number of the host's state that the other machine has said how it went with, or that this machine has to say it about.
+	bool s_Verdict = false; //!< Whether setting this machine's state to the host's got the machines matching.
 
 	int s_Socket = -1; //!< The UDP socket that is connected to the other machine.
 	Clock::time_point s_LastHeardFrom; //!< When something last arrived from the other machine.
@@ -111,15 +122,52 @@ namespace {
 	std::deque<std::pair<Clock::time_point, std::string>> s_HeldBackMessages; //!< What is being held back for the artificial latency, with when each is to be sent.
 	std::thread s_SenderThread; //!< Sends what is being held back when its time comes, so that the artificial latency doesn't also wait for the next simulation update.
 	std::atomic<bool> s_SenderThreadRunning = false; //!< Whether the sender thread is to keep going.
-	std::mt19937 s_LossRandom{std::random_device{}()}; //!< Decides which messages the artificial loss throws away. It has nothing to do with the simulation's random numbers.
+	std::mt19937_64 s_LocalRandom{std::random_device{}()}; //!< Random numbers for what has nothing to do with the simulation: which messages the artificial loss throws away, and new seeds for the simulation's random numbers.
 
-	/// Gets the name of the save that the machines carry on from. Each running game has its own, since several can be running from the same folder, and it is the same after the game has started itself again.
-	std::string GetResyncSaveName() {
-		return std::format("LockstepResync{}_{}", NetLockstep::GetLocalPlayer() + 1, getpid());
+	/// Gets the name of the save that the machines get rebuilt from. Each running game has its own, since several can be running from the same folder.
+	// shortcut: the host's game is passed along as a saved game, written to a file on both ends, since that is the only form the game can be rebuilt from. Give it a form of its own that stays in memory and leaves nothing out.
+	std::string GetReloadSaveName() {
+		return std::format("LockstepReload{}_{}", NetLockstep::GetLocalPlayer() + 1, getpid());
 	}
 
-	std::string GetResyncSavePath() {
-		return g_PresetMan.GetFullModulePath(c_UserScriptedSavesModuleName) + "/" + GetResyncSaveName() + ".ccsave";
+	std::string GetReloadSavePath() {
+		return g_PresetMan.GetFullModulePath(c_UserScriptedSavesModuleName) + "/" + GetReloadSaveName() + ".ccsave";
+	}
+
+	/// Adds a value to the end of something to send, as its bytes.
+	template <typename ValueType>
+	void AppendValue(std::string& blob, const ValueType& value) {
+		blob.append(reinterpret_cast<const char*>(&value), sizeof(value));
+	}
+
+	/// Takes a value off the front of something that arrived. Returns whether there was enough left for it.
+	template <typename ValueType>
+	bool TakeValue(std::string_view& blob, ValueType& value) {
+		if (blob.size() < sizeof(value)) {
+			return false;
+		}
+		std::memcpy(&value, blob.data(), sizeof(value));
+		blob.remove_prefix(sizeof(value));
+		return true;
+	}
+
+	/// Gets the hash of the simulation state that the machines compare.
+	uint64_t GetStateHash() {
+		StateHasher hasher;
+		g_MovableMan.HashState(hasher);
+		// The objects can stay the same for a good while after the random numbers have stopped matching, so those are compared too.
+		hasher.Add(g_RandomGenerator.PeekNext());
+		return hasher.GetHash();
+	}
+
+	/// Starts all the random number generators that the simulation uses over from a seed. Doing this with the same seed on both machines gets their random numbers matching, whatever they were up to.
+	void SeedSimRandomGenerators(uint64_t seed) {
+		g_RandomGenerator.Seed(seed);
+		g_LuaMan.GetMasterScriptState().SeedRandomGenerators(seed + 1);
+		uint64_t luaStateSeed = seed + 2;
+		for (LuaStateWrapper& luaState: g_LuaMan.GetThreadedScriptStates()) {
+			luaState.SeedRandomGenerators(luaStateSeed++);
+		}
 	}
 
 	/// Gets the time on this machine's clock, in microseconds.
@@ -149,10 +197,6 @@ namespace {
 		}
 	}
 } // namespace
-
-void NetLockstep::SetEpoch(int epoch) {
-	s_Epoch = epoch;
-}
 
 void NetLockstep::Connect() {
 	if (s_HostPort.empty() && s_JoinAddress.empty()) {
@@ -280,31 +324,42 @@ void NetLockstep::BeginSimUpdate() {
 	if (!s_Active) {
 		return;
 	}
-	if (s_SimUpdate == 0 && s_Epoch > 0) {
-		// The save this game was started from has been loaded by now, and isn't one the player would want to find among their saved games.
-		std::remove(GetResyncSavePath().c_str());
-	}
-	if (s_LocalPlayer == 0 && s_Epoch == 0 && s_SimUpdate + 1 == s_ForcedResyncUpdate) {
-		s_ResyncIsWanted = true;
-	}
-	if (s_LocalPlayer == 0 && s_ResyncIsWanted) {
-		if (SendResyncSave()) {
-			RestartIntoResyncSave(s_Epoch + 1);
-		} else {
-			std::cerr << "Lockstep: failed to get the other player the game to carry on from, ending at update " << s_SimUpdate << "." << std::endl;
-			s_Desynced = true;
-			System::SetQuit();
-		}
-		return;
-	}
-
 	++s_SimUpdate;
 	if (s_Epoch == 0 && s_SimUpdate == s_ForcedDesyncUpdate) {
-		// Using up a random number is enough to send this machine's simulation its own way.
+		// Using up a random number is enough to send this machine's simulation its own way, and shoving an actor over makes for objects that are off as well.
 		RandomNum();
+		Vector distance;
+		if (Actor* actor = g_MovableMan.GetClosestActor(Vector(), 1000000, distance)) {
+			actor->SetPos(actor->GetPos() + Vector(4.0F, -4.0F));
+			actor->SetVel(actor->GetVel() + Vector(2.0F, -6.0F));
+		}
 	}
+	if (s_LocalPlayer == 0 && s_Epoch == 0 && s_SimUpdate == s_ForcedResyncUpdate) {
+		s_CorrectionIsWanted = true;
+		s_ReloadIsForced = true;
+	}
+
+	if (s_LocalPlayer == 0) {
+		if (s_CorrectionIsWanted && s_CorrectionUpdate == 0) {
+			// The other machine can't begin an update that it doesn't have all of this machine's input for, so the first one that it hasn't been told that about is one that both machines will be at the start of.
+			s_CorrectionUpdate = std::max(s_LocalCompleteThrough + 1, s_SimUpdate);
+		}
+		if (s_CorrectionUpdate != 0 && s_SimUpdate == s_CorrectionUpdate) {
+			if (!CorrectOtherMachine()) {
+				std::cerr << "Lockstep: failed to get the other player's game matching again, ending at update " << s_SimUpdate << "." << std::endl;
+				s_Desynced = true;
+				System::SetQuit();
+				return;
+			}
+			if (s_SimUpdate == 0) {
+				// The game was rebuilt, and the simulation updates are counted over from here.
+				return;
+			}
+		}
+	}
+
 	std::string extraLines = AdaptInputDelay();
-	if (s_ResyncIsWanted) {
+	if (s_LocalPlayer != 0 && s_CorrectionIsWanted) {
 		// Only the host can do something about the machines not matching, so the other one keeps asking it to.
 		extraLines += std::format("{} r\n", s_SimUpdate);
 	}
@@ -318,19 +373,19 @@ void NetLockstep::BeginSimUpdate() {
 	s_PendingLines.clear();
 
 	if (s_SimUpdate % c_HashInterval == 0) {
-		StateHasher hasher;
-		g_MovableMan.HashState(hasher);
-		// The objects can stay the same for a good while after the random numbers have stopped matching, so those are compared too.
-		hasher.Add(g_RandomGenerator.PeekNext());
-		s_StateHashes[s_LocalPlayer][s_SimUpdate] = hasher.GetHash();
-		s_LatestStateHashes.emplace_back(s_SimUpdate, hasher.GetHash());
+		uint64_t stateHash = GetStateHash();
+		s_StateHashes[s_LocalPlayer][s_SimUpdate] = stateHash;
+		s_LatestStateHashes.emplace_back(s_SimUpdate, stateHash);
 		if (s_LatestStateHashes.size() > c_ResentHashCount) {
 			s_LatestStateHashes.pop_front();
 		}
 		CompareStateHashes(s_SimUpdate);
 	}
 
-	if (s_LeaveInputUpdateOpen) {
+	if (s_CorrectionUpdate != 0) {
+		// Input for the update that the other machine gets corrected at isn't said to be complete until that is done, which is what keeps the other machine from getting past it.
+		s_LocalCompleteThrough = std::max(s_LocalCompleteThrough, std::min(inputUpdate, s_CorrectionUpdate - 1));
+	} else if (s_LeaveInputUpdateOpen) {
 		// The next update's input goes to this same update now, which is what makes the delay one shorter.
 		s_LeaveInputUpdateOpen = false;
 		--s_InputDelay;
@@ -343,7 +398,10 @@ void NetLockstep::BeginSimUpdate() {
 	auto waitStart = Clock::now();
 	auto lastSend = waitStart;
 	Receive();
-	while (s_RemoteCompleteThrough < s_SimUpdate && !s_Desynced && s_ResyncSaveEpoch < 0) {
+	if (UseReceivedBlob()) {
+		return;
+	}
+	while (s_RemoteCompleteThrough < s_SimUpdate && !s_Desynced) {
 		// The other machine can't be heard from while it loads the game, which is why it gets longer before it has been.
 		bool silentForTooLong = Clock::now() - std::max(waitStart, s_LastHeardFrom) > std::chrono::seconds(s_RemoteCompleteThrough > 0 ? c_SilenceTimeoutS : c_WaitTimeoutS);
 		if (s_PeerIsGone || silentForTooLong) {
@@ -360,10 +418,9 @@ void NetLockstep::BeginSimUpdate() {
 		pollfd pollInfo{s_Socket, POLLIN, 0};
 		poll(&pollInfo, 1, 1);
 		Receive();
-	}
-	if (s_ResyncSaveEpoch >= 0) {
-		RestartIntoResyncSave(s_ResyncSaveEpoch);
-		return;
+		if (UseReceivedBlob()) {
+			return;
+		}
 	}
 	// A wait of less than half an update is just this machine keeping in step with the other one, and doesn't hold anything up.
 	if (double waitedMS = std::chrono::duration<double, std::milli>(Clock::now() - waitStart).count(); waitedMS > g_TimerMan.GetDeltaTimeMS() * 0.5) {
@@ -443,7 +500,7 @@ void NetLockstep::Stop() {
 		s_Socket = -1;
 	}
 	std::cerr << "Lockstep: ran " << s_SimUpdate << " updates, " << s_MatchedHashCount << " state hashes matched" << (s_Desynced ? ", and then the machines DESYNCED." : ".") << std::endl;
-	std::cerr << "Lockstep: the machines carried on from the host's game " << s_Epoch << " times." << std::endl;
+	std::cerr << "Lockstep: the other machine's state was set to the host's " << s_PatchCount << " times, and the machines were rebuilt from the host's game " << s_Epoch << " times." << std::endl;
 	std::cerr << std::format("Lockstep: {} updates waited for the other player's input, for {:.0f} ms in total.", s_StalledUpdateCount, s_StalledMS) << std::endl;
 	std::cerr << std::format("Lockstep: input delay ended at {} updates, with a ping of about {:.0f} ms. {} of {} messages were thrown away.", s_InputDelay, s_PingSamplesMS.empty() ? 0.0 : s_PingSamplesMS.back(), s_LostMessageCount, s_SentMessageCount) << std::endl;
 	s_Active = false;
@@ -477,6 +534,10 @@ void NetLockstep::SendState(const std::string& extraLines) {
 	for (const auto& [simUpdate, hash]: s_LatestStateHashes) {
 		message += std::format("{} h {:016x}\n", simUpdate, hash);
 	}
+	if (s_LocalPlayer != 0 && s_VerdictBlobID > 0) {
+		// The host waits to hear how setting this machine's state to its own went, and keeps being told in case that gets lost.
+		message += std::format("{} v {}\n", s_VerdictBlobID, static_cast<int>(s_Verdict));
+	}
 	SendToPeer(message + extraLines);
 }
 
@@ -485,7 +546,7 @@ void NetLockstep::SendToPeer(const std::string& text) {
 		return;
 	}
 	++s_SentMessageCount;
-	if (s_ArtificialLossPercent > 0 && static_cast<int>(s_LossRandom() % 100) < s_ArtificialLossPercent) {
+	if (s_ArtificialLossPercent > 0 && static_cast<int>(s_LocalRandom() % 100) < s_ArtificialLossPercent) {
 		++s_LostMessageCount;
 		return;
 	}
@@ -511,8 +572,8 @@ void NetLockstep::Receive() {
 			SendNow("welcome");
 		} else if (text == "bye") {
 			s_PeerIsGone = true;
-		} else if (text.starts_with("S ") || text.starts_with("K ") || text.starts_with("D ")) {
-			HandleResyncPart(text);
+		} else if (text.starts_with("S ") || text.starts_with("K ")) {
+			HandleBlobPart(text);
 		} else if (text != "welcome") {
 			HandleMessage(text);
 		}
@@ -542,7 +603,12 @@ void NetLockstep::HandleMessage(const std::string& text) {
 			}
 		} else if (content == "r") {
 			if (s_LocalPlayer == 0) {
-				s_ResyncIsWanted = true;
+				s_CorrectionIsWanted = true;
+			}
+		} else if (content.starts_with("v ")) {
+			if (s_LocalPlayer == 0 && simUpdate == s_LastBlobID) {
+				s_VerdictBlobID = static_cast<int>(simUpdate);
+				s_Verdict = content[2] == '1';
 			}
 		} else if (content == "a") {
 			if (simUpdate > s_RemoteAckedThrough && simUpdate <= s_LocalCompleteThrough) {
@@ -587,33 +653,185 @@ void NetLockstep::HandleMessage(const std::string& text) {
 	}
 }
 
-bool NetLockstep::SendResyncSave() {
-	std::cerr << "Lockstep: getting the other player the game to carry on from, at update " << s_SimUpdate << "..." << std::endl;
-	if (!g_ActivityMan.SaveCurrentGame(GetResyncSaveName())) {
+void NetLockstep::ForgetStateHashes() {
+	for (std::map<long long, uint64_t>& stateHashes: s_StateHashes) {
+		stateHashes.clear();
+	}
+	s_LatestStateHashes.clear();
+	s_LastComparedHashUpdate = s_SimUpdate;
+}
+
+void NetLockstep::StartEpoch(int epoch) {
+	s_Epoch = epoch;
+	s_CorrectionIsWanted = false;
+	s_ReloadIsForced = false;
+	s_CorrectionUpdate = 0;
+
+	s_SimUpdate = 0;
+	s_LocalCompleteThrough = 0;
+	s_RemoteAckedThrough = 0;
+	s_RemoteCompleteThrough = 0;
+	s_PendingLines.clear();
+	s_UnconfirmedLines.clear();
+	for (std::map<long long, std::vector<std::string>>& playerLines: s_InputLines) {
+		playerLines.clear();
+	}
+	ForgetStateHashes();
+
+	s_LeaveInputUpdateOpen = false;
+	s_LastInputDelayChange = 0;
+	s_LastStallAllowanceChange = 0;
+	s_LastStallNotice = 0;
+}
+
+bool NetLockstep::CorrectOtherMachine() {
+	auto correctionStart = Clock::now();
+	bool matching = false;
+
+	if (!s_ReloadIsForced) {
+		// First the other machine gets to set its state to this machine's, which works out if it still has all the same objects, and is the least that can be done.
+		// The random numbers are started over on both machines rather than passed along, which gets them matching just the same.
+		uint64_t seed = s_LocalRandom();
+		SeedSimRandomGenerators(seed);
+
+		std::string patch(1, c_PatchBlob);
+		AppendValue(patch, s_SimUpdate);
+		AppendValue(patch, seed);
+		std::vector<int64_t> uniqueIDCounters = MovableObject::GetUniqueIDCounters();
+		AppendValue(patch, static_cast<uint32_t>(uniqueIDCounters.size()));
+		for (int64_t uniqueIDCounter: uniqueIDCounters) {
+			AppendValue(patch, uniqueIDCounter);
+		}
+		AppendValue(patch, GetStateHash());
+		g_MovableMan.WriteSyncState(patch);
+		if (!SendBlob(patch)) {
+			return false;
+		}
+		while (s_VerdictBlobID != s_LastBlobID) {
+			if (s_PeerIsGone || Clock::now() - correctionStart > std::chrono::seconds(c_CorrectionTimeoutS)) {
+				return false;
+			}
+			pollfd pollInfo{s_Socket, POLLIN, 0};
+			poll(&pollInfo, 1, 2);
+			Receive();
+		}
+		matching = s_Verdict;
+	}
+
+	if (matching) {
+		++s_PatchCount;
+		s_CorrectionIsWanted = false;
+		s_CorrectionUpdate = 0;
+		ForgetStateHashes();
+		// The traces of the two machines can't match up to here, so this marks where they are to match from again.
+		DeterminismCheck("Lockstep correction", s_LastBlobID);
+		std::cerr << std::format("Lockstep: set the other player's state to this one's at update {}, in {:.0f} ms.", s_SimUpdate, std::chrono::duration<double, std::milli>(Clock::now() - correctionStart).count()) << std::endl;
+		return true;
+	}
+
+	// The other machine doesn't have the same objects anymore, so both machines get their game rebuilt from this one's.
+	if (s_Epoch >= c_MaxReloadCount || !g_ActivityMan.SaveCurrentGame(GetReloadSaveName())) {
 		return false;
 	}
 	// The save gets written in the background, and has to be all there before it can be read back.
 	if (g_ActivityMan.GetSaveGameTask().valid()) {
 		g_ActivityMan.GetSaveGameTask().wait();
 	}
-	std::ifstream saveFile(GetResyncSavePath(), std::ios::binary);
-	s_ResyncSave.assign(std::istreambuf_iterator<char>(saveFile), std::istreambuf_iterator<char>());
-	if (s_ResyncSave.empty() || s_ResyncSave.size() > c_MaxResyncSaveSize) {
+	std::string reload(1, c_ReloadBlob);
+	AppendValue(reload, s_SimUpdate);
+	{
+		std::ifstream saveFile(GetReloadSavePath(), std::ios::binary);
+		reload.append(std::istreambuf_iterator<char>(saveFile), std::istreambuf_iterator<char>());
+	}
+	long long correctedUpdate = s_SimUpdate;
+	if (reload.size() <= 1 + sizeof(s_SimUpdate) || !SendBlob(reload)) {
+		return false;
+	}
+	if (!RebuildGame()) {
+		return false;
+	}
+	std::cerr << std::format("Lockstep: rebuilt both games from this one at update {}, in {:.0f} ms.", correctedUpdate, std::chrono::duration<double, std::milli>(Clock::now() - correctionStart).count()) << std::endl;
+	return true;
+}
+
+bool NetLockstep::UseReceivedBlob() {
+	std::string_view blob = s_ReceivedBlob;
+	char kind = 0;
+	long long simUpdate = 0;
+	// What arrived is for the start of one simulation update, which the host keeps this machine from getting past, though it can arrive before this machine gets there.
+	if (!TakeValue(blob, kind) || !TakeValue(blob, simUpdate) || simUpdate != s_SimUpdate) {
 		return false;
 	}
 
-	// From here on the other machine's messages about the simulation updates are of no use, so they get told apart by which time this is.
-	int resyncEpoch = s_Epoch + 1;
-	s_ResyncIsWanted = false;
-	size_t partCount = (s_ResyncSave.size() + c_ResyncPartSize - 1) / c_ResyncPartSize;
-	s_ResyncPartsDone.assign(partCount, false);
-	s_ResyncPartsLeft = partCount;
+	if (kind == c_ReloadBlob) {
+		{
+			std::ofstream saveFile(GetReloadSavePath(), std::ios::binary | std::ios::trunc);
+			saveFile.write(blob.data(), static_cast<std::streamsize>(blob.size()));
+		}
+		s_ReceivedBlob.clear();
+		if (!RebuildGame()) {
+			s_Desynced = true;
+			System::SetQuit();
+		} else {
+			std::cerr << "Lockstep: rebuilt this game from the host's." << std::endl;
+		}
+		return true;
+	}
+
+	bool matching = false;
+	int changedCount = 0;
+	uint64_t seed = 0;
+	uint32_t uniqueIDCounterCount = 0;
+	std::vector<int64_t> uniqueIDCounters;
+	uint64_t hostStateHash = 0;
+	bool readable = kind == c_PatchBlob && TakeValue(blob, seed) && TakeValue(blob, uniqueIDCounterCount) && uniqueIDCounterCount <= 1024;
+	for (uint32_t i = 0; readable && i < uniqueIDCounterCount; ++i) {
+		readable = TakeValue(blob, uniqueIDCounters.emplace_back());
+	}
+	if (readable && TakeValue(blob, hostStateHash) && g_MovableMan.ApplySyncState(blob, changedCount)) {
+		MovableObject::SetUniqueIDCounters(uniqueIDCounters);
+		SeedSimRandomGenerators(seed);
+		matching = GetStateHash() == hostStateHash;
+	}
+	s_ReceivedBlob.clear();
+	s_VerdictBlobID = s_LastBlobID;
+	s_Verdict = matching;
+	if (matching) {
+		++s_PatchCount;
+		s_CorrectionIsWanted = false;
+		ForgetStateHashes();
+		DeterminismCheck("Lockstep correction", s_LastBlobID);
+		std::cerr << "Lockstep: set this game's state to the host's at update " << s_SimUpdate << ", which moved " << changedCount << " objects." << std::endl;
+	}
+	return false;
+}
+
+bool NetLockstep::RebuildGame() {
+	int epoch = s_Epoch + 1;
+	// Everything that the simulation goes by and that isn't in the save has to end up the same on both machines: how much time has passed, which unique IDs get handed out next, and the random numbers.
+	// Each rebuild hands out unique IDs from a range of its own, so that none of them can be one that an object from before still has.
+	g_TimerMan.ResetTime();
+	MovableObject::SetUniqueIDCounters(std::vector<int64_t>(MovableObject::GetUniqueIDCounters().size(), static_cast<int64_t>(epoch) << 36));
+	SeedSimRandomGenerators(static_cast<uint64_t>(epoch));
+	bool loaded = g_ActivityMan.LoadAndLaunchGame(GetReloadSaveName());
+	std::remove(GetReloadSavePath().c_str());
+	StartEpoch(epoch);
+	DeterminismCheck("Lockstep correction", epoch);
+	return loaded;
+}
+
+bool NetLockstep::SendBlob(const std::string& blob) {
+	++s_LastBlobID;
+	s_Blob = blob;
+	size_t partCount = (s_Blob.size() + c_BlobPartSize - 1) / c_BlobPartSize;
+	s_BlobPartsDone.assign(partCount, false);
+	s_BlobPartsLeft = partCount;
 	std::vector<Clock::time_point> partLastSent(partCount);
 
-	// shortcut: the parts go out as fast as the other machine confirms them, without regard for how much the connection can take. Pace them once saves take long to send over real connections.
+	// shortcut: the parts go out as fast as the other machine confirms them, without regard for how much the connection can take. Pace them once this takes long over real connections.
 	auto sendStart = Clock::now();
-	while (s_ResyncPartsLeft > 0) {
-		if (s_PeerIsGone || Clock::now() - sendStart > std::chrono::seconds(c_ResyncTimeoutS)) {
+	while (s_BlobPartsLeft > 0) {
+		if (s_PeerIsGone || Clock::now() - sendStart > std::chrono::seconds(c_CorrectionTimeoutS)) {
 			return false;
 		}
 		// A part is sent again when the other machine has had the time to confirm it and hasn't.
@@ -621,8 +839,8 @@ bool NetLockstep::SendResyncSave() {
 		auto resendAfter = std::chrono::milliseconds(static_cast<int>(pingMS * 2.0) + 50);
 		int sentCount = 0;
 		for (size_t part = 0; part < partCount && sentCount < 64; ++part) {
-			if (!s_ResyncPartsDone[part] && Clock::now() - partLastSent[part] > resendAfter) {
-				SendToPeer(std::format("S {} {} {}\n", resyncEpoch, part, s_ResyncSave.size()) + s_ResyncSave.substr(part * c_ResyncPartSize, c_ResyncPartSize));
+			if (!s_BlobPartsDone[part] && Clock::now() - partLastSent[part] > resendAfter) {
+				SendToPeer(std::format("S {} {} {}\n", s_LastBlobID, part, s_Blob.size()) + s_Blob.substr(part * c_BlobPartSize, c_BlobPartSize));
 				partLastSent[part] = Clock::now();
 				++sentCount;
 			}
@@ -631,126 +849,66 @@ bool NetLockstep::SendResyncSave() {
 		poll(&pollInfo, 1, 2);
 		Receive();
 	}
-	s_ResyncSave.clear();
-	// The other machine keeps confirming parts until it hears that this one has heard about them all, so that is said a few times in case it gets lost.
-	for (int repeat = 0; repeat < 5; ++repeat) {
-		SendToPeer(std::format("D {} 0\n", resyncEpoch));
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
+	s_Blob.clear();
 	return true;
 }
 
-void NetLockstep::HandleResyncPart(const std::string& text) {
+void NetLockstep::HandleBlobPart(const std::string& text) {
 	size_t headerEnd = text.find('\n');
 	std::istringstream header(text.substr(0, headerEnd));
 	char kind = 0;
-	int epoch = -1;
+	int blobID = -1;
 	long long part = -1;
-	header >> kind >> epoch >> part;
+	header >> kind >> blobID >> part;
 	if (header.fail() || part < 0) {
 		return;
 	}
 
-	if (kind == 'D') {
-		s_ResyncHostIsDone = s_ResyncHostIsDone || (s_LocalPlayer == 1 && epoch == s_ResyncSaveEpoch);
-		return;
-	}
 	if (kind == 'K') {
-		// The other machine has this part of the save.
-		if (s_LocalPlayer == 0 && epoch == s_Epoch + 1 && static_cast<size_t>(part) < s_ResyncPartsDone.size() && !s_ResyncPartsDone[part]) {
-			s_ResyncPartsDone[part] = true;
-			--s_ResyncPartsLeft;
+		// The other machine has this part.
+		if (s_LocalPlayer == 0 && blobID == s_LastBlobID && static_cast<size_t>(part) < s_BlobPartsDone.size() && !s_BlobPartsDone[part]) {
+			s_BlobPartsDone[part] = true;
+			--s_BlobPartsLeft;
 		}
 		return;
 	}
-	if (s_LocalPlayer != 1 || headerEnd == std::string::npos) {
+	if (s_LocalPlayer == 0 || headerEnd == std::string::npos) {
 		return;
 	}
-	if (epoch == s_ResyncSaveEpoch) {
-		// This machine already has all of this save, but its confirmation of this part got lost.
-		SendToPeer(std::format("K {} {}\n", epoch, part));
+	if (blobID <= s_LastBlobID) {
+		// This machine already has all of this, but its confirmation of this part got lost.
+		SendToPeer(std::format("K {} {}\n", blobID, part));
 		return;
 	}
-	size_t saveSize = 0;
-	header >> saveSize;
+	size_t blobSize = 0;
+	header >> blobSize;
 	std::string_view data = std::string_view(text).substr(headerEnd + 1);
-	size_t partCount = (saveSize + c_ResyncPartSize - 1) / c_ResyncPartSize;
-	size_t partStart = static_cast<size_t>(part) * c_ResyncPartSize;
+	size_t partCount = (blobSize + c_BlobPartSize - 1) / c_BlobPartSize;
+	size_t partStart = static_cast<size_t>(part) * c_BlobPartSize;
 	// The other machine is not to be trusted with how much memory gets used, or with where in it things get put.
-	if (header.fail() || epoch != s_Epoch + 1 || saveSize == 0 || saveSize > c_MaxResyncSaveSize || static_cast<size_t>(part) >= partCount || data.size() != std::min(c_ResyncPartSize, saveSize - partStart)) {
+	if (header.fail() || blobSize == 0 || blobSize > c_MaxBlobSize || static_cast<size_t>(part) >= partCount || data.size() != std::min(c_BlobPartSize, blobSize - partStart)) {
 		return;
 	}
 
-	if (s_ResyncSave.size() != saveSize) {
-		s_ResyncSave.assign(saveSize, '\0');
-		s_ResyncPartsDone.assign(partCount, false);
-		s_ResyncPartsLeft = partCount;
+	if (blobID != s_IncomingBlobID || s_Blob.size() != blobSize) {
+		s_IncomingBlobID = blobID;
+		s_Blob.assign(blobSize, '\0');
+		s_BlobPartsDone.assign(partCount, false);
+		s_BlobPartsLeft = partCount;
 	}
-	if (!s_ResyncPartsDone[part]) {
-		s_ResyncSave.replace(partStart, data.size(), data);
-		s_ResyncPartsDone[part] = true;
-		--s_ResyncPartsLeft;
+	if (!s_BlobPartsDone[part]) {
+		s_Blob.replace(partStart, data.size(), data);
+		s_BlobPartsDone[part] = true;
+		--s_BlobPartsLeft;
 	}
-	SendToPeer(std::format("K {} {}\n", epoch, part));
+	SendToPeer(std::format("K {} {}\n", blobID, part));
 
-	if (s_ResyncPartsLeft == 0) {
-		std::ofstream saveFile(GetResyncSavePath(), std::ios::binary | std::ios::trunc);
-		saveFile.write(s_ResyncSave.data(), static_cast<std::streamsize>(s_ResyncSave.size()));
-		saveFile.close();
-		s_ResyncSave.clear();
-		s_ResyncPartsDone.clear();
-		s_ResyncSaveEpoch = epoch;
+	if (s_BlobPartsLeft == 0) {
+		s_LastBlobID = blobID;
+		s_ReceivedBlob = std::move(s_Blob);
+		s_Blob.clear();
+		s_BlobPartsDone.clear();
 	}
-}
-
-void NetLockstep::RestartIntoResyncSave(int epoch) {
-	std::cerr << "Lockstep: starting again from the host's game." << std::endl;
-	if (s_LocalPlayer == 1) {
-		// The host may still be waiting to hear that the last parts of the save got here, and sends those again until it does, so this machine stays around to confirm them until the host says it is done.
-		auto waitStart = Clock::now();
-		while (!s_ResyncHostIsDone && !s_PeerIsGone && Clock::now() - waitStart < std::chrono::seconds(5)) {
-			pollfd pollInfo{s_Socket, POLLIN, 0};
-			poll(&pollInfo, 1, 5);
-			Receive();
-		}
-	}
-
-	// The game is started with what it was started with before, except that it loads the save, and knows which time this is.
-	std::vector<std::string> arguments;
-	for (size_t i = 0; i < s_ProgramArguments.size(); ++i) {
-		const std::string& argument = s_ProgramArguments[i];
-		if (argument == "-activity") {
-			i += 3;
-		} else if (argument == "-save" || argument == "-net-epoch" || argument == "-net-force-resync" || argument == "-net-force-desync") {
-			i += 1;
-		} else {
-			arguments.emplace_back(argument);
-		}
-	}
-	arguments.insert(arguments.end(), {"-save", GetResyncSaveName(), "-net-epoch", std::to_string(epoch)});
-	std::vector<char*> argumentPointers;
-	for (std::string& argument: arguments) {
-		argumentPointers.emplace_back(argument.data());
-	}
-	argumentPointers.emplace_back(nullptr);
-
-	// Nothing of this run of the game gets to finish up after this, so what can't be lost is finished up here.
-	if (s_SenderThread.joinable()) {
-		s_SenderThreadRunning = false;
-		s_SenderThread.join();
-	}
-	SendHeldBackMessages(true);
-	close(s_Socket);
-	s_Socket = -1;
-	DeterminismChecker::Stop();
-	InputRecorder::Stop();
-	std::cerr.flush();
-
-	execv(argumentPointers[0], argumentPointers.data());
-	// This is only reached if the game couldn't be started again.
-	std::cerr << "Lockstep: failed to start the game again!" << std::endl;
-	s_Desynced = true;
-	System::SetQuit();
 }
 
 void NetLockstep::CompareStateHashes(long long simUpdate) {
@@ -763,14 +921,9 @@ void NetLockstep::CompareStateHashes(long long simUpdate) {
 	}
 	if (localHash->second == remoteHash->second) {
 		++s_MatchedHashCount;
-	} else if (!s_Desynced && !s_ResyncIsWanted) {
+	} else if (!s_Desynced && !s_CorrectionIsWanted) {
 		std::cerr << std::format("Lockstep: DESYNC! The machines stopped matching by update {}. This one has {:016x}, the other one has {:016x}.", simUpdate, localHash->second, remoteHash->second) << std::endl;
-		if (s_Epoch < c_MaxResyncCount) {
-			s_ResyncIsWanted = true;
-		} else {
-			s_Desynced = true;
-			System::SetQuit();
-		}
+		s_CorrectionIsWanted = true;
 	}
 	// Hashes get repeated, and ones from before this update could still turn up, so those are done with as well.
 	s_LastComparedHashUpdate = std::max(s_LastComparedHashUpdate, simUpdate);

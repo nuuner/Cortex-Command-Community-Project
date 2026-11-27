@@ -21,6 +21,8 @@
 #include "LuaMan.h"
 #include "ThreadMan.h"
 #include "DeterminismChecker.h"
+
+#include <cstring>
 #include "InputRecorder.h"
 #include "System.h"
 
@@ -700,6 +702,118 @@ void MovableMan::HashState(StateHasher& hasher) const {
 			hashMovableObject(movableObject);
 		}
 	}
+}
+
+namespace {
+	/// What HashState goes by for an MO, as it is passed between machines. These are the same machine's bytes on both ends.
+	// shortcut: raw bytes, so both machines have to be of the same architecture. Give it a byte order once that isn't a given.
+	#pragma pack(push, 1)
+	struct SyncedMOState {
+		int64_t uniqueID;
+		float posX, posY, velX, velY, rotAngle, angularVel;
+		uint8_t hFlipped;
+		uint8_t isActor;
+		int32_t team;
+		int32_t status;
+		float health;
+	};
+	#pragma pack(pop)
+
+	SyncedMOState GetSyncedMOState(const MovableObject* movableObject) {
+		SyncedMOState state{};
+		state.uniqueID = movableObject->GetUniqueID();
+		state.posX = movableObject->GetPos().m_X;
+		state.posY = movableObject->GetPos().m_Y;
+		state.velX = movableObject->GetVel().m_X;
+		state.velY = movableObject->GetVel().m_Y;
+		state.rotAngle = movableObject->GetRotAngle();
+		state.angularVel = movableObject->GetAngularVel();
+		state.hFlipped = movableObject->IsHFlipped();
+		if (const Actor* actor = dynamic_cast<const Actor*>(movableObject)) {
+			state.isActor = 1;
+			state.team = actor->GetTeam();
+			state.status = actor->GetStatus();
+			state.health = actor->GetHealth();
+		}
+		return state;
+	}
+} // namespace
+
+void MovableMan::WriteSyncState(std::string& state) const {
+	// The same MOs in the same order as HashState goes through them.
+	std::vector<const MovableObject*> movableObjects;
+	for (const std::deque<Actor*>* actors: {&m_Actors, &m_AddedActors}) {
+		movableObjects.insert(movableObjects.end(), actors->begin(), actors->end());
+	}
+	for (const std::deque<MovableObject*>* others: {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles}) {
+		movableObjects.insert(movableObjects.end(), others->begin(), others->end());
+	}
+
+	uint32_t count = static_cast<uint32_t>(movableObjects.size());
+	state.append(reinterpret_cast<const char*>(&count), sizeof(count));
+	for (const MovableObject* movableObject: movableObjects) {
+		SyncedMOState moState = GetSyncedMOState(movableObject);
+		state.append(reinterpret_cast<const char*>(&moState), sizeof(moState));
+	}
+}
+
+bool MovableMan::ApplySyncState(std::string_view& state, int& changedCount) {
+	changedCount = 0;
+	uint32_t count = 0;
+	if (state.size() < sizeof(count)) {
+		return false;
+	}
+	std::memcpy(&count, state.data(), sizeof(count));
+	state.remove_prefix(sizeof(count));
+	if (state.size() / sizeof(SyncedMOState) < count) {
+		return false;
+	}
+	std::string_view moStates = state.substr(0, count * sizeof(SyncedMOState));
+	state.remove_prefix(moStates.size());
+
+	std::vector<MovableObject*> movableObjects;
+	for (std::deque<Actor*>* actors: {&m_Actors, &m_AddedActors}) {
+		movableObjects.insert(movableObjects.end(), actors->begin(), actors->end());
+	}
+	for (std::deque<MovableObject*>* others: {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles}) {
+		movableObjects.insert(movableObjects.end(), others->begin(), others->end());
+	}
+
+	// Setting some MOs and not others would only make for a different mismatch, so this machine first has to have the same MOs in the same order.
+	if (movableObjects.size() != count) {
+		return false;
+	}
+	for (uint32_t i = 0; i < count; ++i) {
+		SyncedMOState moState;
+		std::memcpy(&moState, moStates.data() + i * sizeof(SyncedMOState), sizeof(moState));
+		if (movableObjects[i]->GetUniqueID() != moState.uniqueID || (dynamic_cast<Actor*>(movableObjects[i]) != nullptr) != (moState.isActor != 0)) {
+			return false;
+		}
+	}
+
+	for (uint32_t i = 0; i < count; ++i) {
+		SyncedMOState moState;
+		std::memcpy(&moState, moStates.data() + i * sizeof(SyncedMOState), sizeof(moState));
+		MovableObject* movableObject = movableObjects[i];
+		SyncedMOState ownState = GetSyncedMOState(movableObject);
+		if (std::memcmp(&ownState, &moState, sizeof(moState)) == 0) {
+			continue;
+		}
+		++changedCount;
+		movableObject->SetPos(Vector(moState.posX, moState.posY));
+		movableObject->SetVel(Vector(moState.velX, moState.velY));
+		movableObject->SetRotAngle(moState.rotAngle);
+		movableObject->SetAngularVel(moState.angularVel);
+		movableObject->SetHFlipped(moState.hFlipped != 0);
+		if (Actor* actor = dynamic_cast<Actor*>(movableObject)) {
+			if (actor->GetTeam() != moState.team) {
+				actor->SetTeam(moState.team);
+			}
+			actor->SetStatus(static_cast<Actor::Status>(moState.status));
+			actor->SetHealth(moState.health);
+		}
+	}
+	return true;
 }
 
 bool MovableMan::AddMO(MovableObject* movableObjectToAdd) {

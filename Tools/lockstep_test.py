@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--delay", type=int, help="how many sim updates each one has its input held back for, instead of adapting it to the connection")
     parser.add_argument("--loss", type=int, default=0, help="how many of each hundred messages each one throws away instead of sending (default: %(default)s)")
     parser.add_argument("--latency", type=int, default=0, help="how many milliseconds each one holds back what it sends for, which makes for a ping of twice that (default: %(default)s)")
-    parser.add_argument("--force-resync", type=int, metavar="UPDATE", help="have the host load both from its own state at this sim update, as it does when they stop matching")
+    parser.add_argument("--force-resync", type=int, metavar="UPDATE", help="have the host rebuild both games from its own at this sim update, as it does when the joiner can't be corrected with less")
     parser.add_argument("--force-desync", type=int, metavar="UPDATE", help="have the joiner throw its simulation off at this sim update, for the two to find out and recover from")
     parser.add_argument("--windowed", action="store_true", help="run both with the game window, audio and real time pacing, instead of headless")
     parser.add_argument("--trace-dir", type=Path, help="where to keep the inputs and traces, instead of a temporary directory")
@@ -69,6 +69,12 @@ def main():
             failed = failed or process.returncode != 0
 
         host_trace, joiner_trace = (trace.read_text().splitlines() if trace.exists() else [] for trace in traces)
+        # The two aren't expected to match from when they stopped matching up to when the joiner was last corrected, which is what that is for.
+        corrections = [sum("Lockstep correction" in line for line in trace) for trace in (host_trace, joiner_trace)]
+        if any(corrections):
+            print(f"The joiner was corrected {corrections[1]} times, going by the host {corrections[0]} times. Comparing the traces from the last time on.")
+            host_trace, joiner_trace = (trace[max(index for index, line in enumerate(trace) if "Lockstep correction" in line):] if count else trace for trace, count in zip((host_trace, joiner_trace), corrections))
+            failed = failed or corrections[0] != corrections[1]
         if not host_trace or host_trace != joiner_trace:
             failed = True
             difference = next((line for line, (host, joiner) in enumerate(zip(host_trace, joiner_trace)) if host != joiner), min(len(host_trace), len(joiner_trace)))

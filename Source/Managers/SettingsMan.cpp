@@ -113,7 +113,8 @@ void SettingsMan::UpdateSettingsFile() const {
 
 int SettingsMan::GetNumberOfLuaStatesOverride() const {
 	constexpr int luaStatesWhenCheckingDeterminism = 4;
-	if (m_NumberOfLuaStatesOverride == -1 && DeterminismChecker::IsActive()) {
+	// Which Lua state a script lands on is part of how the simulation plays out, so the number of them can't be left to how many cores this machine has when it has to play out the same elsewhere.
+	if (m_NumberOfLuaStatesOverride == -1 && (DeterminismChecker::IsActive() || InputRecorder::IsActive())) {
 		return luaStatesWhenCheckingDeterminism;
 	}
 	return m_NumberOfLuaStatesOverride;

@@ -998,6 +998,14 @@ namespace RTE {
 		/// @return Returns this MO's unique persistent ID
 		int64_t GetUniqueID() const { return m_UniqueID; }
 
+		/// Gets how many unique IDs have been handed out on each thread so far.
+		/// @return The counts, by thread number.
+		static std::vector<int64_t> GetUniqueIDCounters();
+
+		/// Sets how many unique IDs count as handed out on each thread. Machines in lockstep do this so that the same MOs get the same IDs on all of them from then on.
+		/// @param counters The counts, by thread number. Threads past the end of it are left alone.
+		static void SetUniqueIDCounters(const std::vector<int64_t>& counters);
+
 		/// Gets the preset name and unique ID of this MO, often useful for error messages.
 		/// @return A string containing the unique ID and preset name of this MO.
 		std::string GetPresetNameAndUniqueID() const { return m_PresetName + ", UID: " + std::to_string(m_UniqueID); }

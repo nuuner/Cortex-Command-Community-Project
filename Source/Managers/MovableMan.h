@@ -258,6 +258,16 @@ namespace RTE {
 		/// @param hasher The StateHasher to add the state to.
 		void HashState(StateHasher& hasher) const;
 
+		/// Writes out everything that HashState goes by for each MO, for another machine to set its own MOs to.
+		/// @param state What to add it to the end of.
+		void WriteSyncState(std::string& state) const;
+
+		/// Sets the MOs to what another machine wrote with WriteSyncState. Nothing is changed unless this machine has the very same MOs as the other one.
+		/// @param state What the other machine wrote. This is moved past what was read from it.
+		/// @param changedCount How many MOs weren't already as the other machine has them.
+		/// @return Whether this machine had the same MOs, and so now matches the other one in this.
+		bool ApplySyncState(std::string_view& state, int& changedCount);
+
 		/// Gets the global setting for how much splash MOPixels should be created
 		/// an MO penetrates the terrain deeply.
 		/// @return A float with the global splash amount setting, form 1.0 to 0.0.

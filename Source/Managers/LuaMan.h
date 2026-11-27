@@ -79,6 +79,13 @@ namespace RTE {
 		/// @return The random number generator used for this lua state.
 		const RandomGenerator& GetRandomGenerator() const { return m_RandomGenerator; }
 
+		/// Starts the random number generators of this lua state over from a seed. Machines in lockstep do this to get their random numbers matching again.
+		/// @param seed The seed.
+		void SeedRandomGenerators(uint64_t seed) {
+			m_RandomGenerator.Seed(seed);
+			m_AIRandomGenerator.Seed(~seed);
+		}
+
 		/// Sets whether what is being run on this lua state is AI. While it is, this lua state and the global random functions called from this thread use a random number generator that is only for AI.
 		/// The AI can be left to do as it pleases this way, without it affecting the random numbers that the rest of the simulation gets.
 		/// @param runningAI Whether AI is what is being run on this lua state, by this thread.

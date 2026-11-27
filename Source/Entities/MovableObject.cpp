@@ -26,6 +26,16 @@ AbstractClassInfo(MovableObject, SceneObject);
 std::array<std::atomic<int64_t>, 1 << MovableObject::c_UniqueIDThreadBits> MovableObject::m_UniqueIDCounters{};
 std::string MovableObject::ms_EmptyString = "";
 
+std::vector<int64_t> MovableObject::GetUniqueIDCounters() {
+	return std::vector<int64_t>(m_UniqueIDCounters.begin(), m_UniqueIDCounters.end());
+}
+
+void MovableObject::SetUniqueIDCounters(const std::vector<int64_t>& counters) {
+	for (size_t thread = 0; thread < counters.size() && thread < m_UniqueIDCounters.size(); ++thread) {
+		m_UniqueIDCounters[thread] = counters[thread];
+	}
+}
+
 int64_t MovableObject::GetNextUniqueID() {
 	// The main thread is number 0, and the thread that is running a threaded Lua state has the number after that state's.
 	int64_t threadNumber = 0;
