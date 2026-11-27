@@ -2,7 +2,10 @@
 
 #include "SDL3/SDL_events.h"
 
+#include <chrono>
+#include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <string>
 #include <vector>
@@ -18,13 +21,24 @@ namespace RTE {
 	class NetLockstep {
 
 	public:
-		/// Waits for the other machine to connect, and plays as player one.
+		/// Sets this machine to wait for the other one to connect, and play as player one.
 		/// @param port The port to listen on.
-		static void Host(const std::string& port);
+		static void SetHostPort(const std::string& port) { s_HostPort = port; }
 
-		/// Connects to a hosting machine, and plays as player two.
+		/// Sets this machine to connect to a hosting machine, and play as player two.
 		/// @param address The address and port of the host, as "address:port".
-		static void Join(const std::string& address);
+		static void SetJoinAddress(const std::string& address) { s_JoinAddress = address; }
+
+		/// Sets how many simulation updates input is held back for. The host decides this for both machines.
+		/// @param inputDelay The number of simulation updates.
+		static void SetInputDelay(long long inputDelay) { s_InputDelay = std::max(1LL, inputDelay); }
+
+		/// Sets how long everything this machine sends is held back for, to try out how a slower connection plays.
+		/// @param latencyMS The time to hold it back for, in milliseconds. A ping is twice this, when both machines are set to it.
+		static void SetArtificialLatency(int latencyMS) { s_ArtificialLatencyMS = std::max(0, latencyMS); }
+
+		/// Makes the connection that was asked for with SetHostPort or SetJoinAddress, if any. This doesn't return until the other machine is there.
+		static void Connect();
 
 		/// Gets whether the simulation is running in lockstep with another machine.
 		/// @return Whether lockstep is on.
@@ -57,10 +71,18 @@ namespace RTE {
 
 	private:
 		static constexpr int c_PlayerCount = 2; //!< How many machines, and so players, there are.
-		static constexpr long long c_InputDelay = 3; //!< How many simulation updates input is held back for.
 		static constexpr long long c_HashInterval = 30; //!< How many simulation updates there are between the state hashes that get compared.
 		static constexpr int c_WaitTimeoutS = 120; //!< How long to wait for the other machine's input before giving up on it. It has to cover the other machine loading the game.
 		static constexpr Uint32 c_VirtualDeviceBase = 1000; //!< The mouse and keyboard ID of the first player. Each player gets a made up device, which is the same on both machines.
+
+		static std::string s_HostPort; //!< The port to host on, if this machine is to host.
+		static std::string s_JoinAddress; //!< The address to join, if this machine is to join.
+		static long long s_InputDelay; //!< How many simulation updates input is held back for. The joiner gets this from the host.
+		static bool s_InputDelayIsKnown; //!< Whether the host's input delay has arrived, on the joiner.
+		static int s_ArtificialLatencyMS; //!< How long everything this machine sends is held back for, in milliseconds.
+		static std::deque<std::pair<std::chrono::steady_clock::time_point, std::string>> s_HeldBackMessages; //!< What is being held back for the artificial latency, with when each is to be sent.
+		static long long s_StalledUpdateCount; //!< How many simulation updates had to wait for the other machine's input.
+		static double s_StalledMS; //!< How long simulation updates have waited for the other machine's input in total, in milliseconds.
 
 		static bool s_Active; //!< Whether lockstep is on.
 		static bool s_Desynced; //!< Whether the simulation states stopped matching.
@@ -80,9 +102,23 @@ namespace RTE {
 		/// @param localPlayer Which player this machine is.
 		static void Start(int socket, int localPlayer);
 
-		/// Sends text to the other machine. Drops the connection if that fails.
+		/// Waits for the other machine to connect, and plays as player one.
+		static void Host();
+
+		/// Connects to the hosting machine, and plays as player two.
+		static void Join();
+
+		/// Sends text to the other machine, after the artificial latency if there is any.
 		/// @param text The text to send.
 		static void Send(const std::string& text);
+
+		/// Sends text to the other machine right away. Drops the connection if that fails.
+		/// @param text The text to send.
+		static void SendNow(const std::string& text);
+
+		/// Sends what has been held back for long enough.
+		/// @param everything Whether to send all of it, no matter how long it has been held back for.
+		static void SendHeldBackMessages(bool everything = false);
 
 		/// Reads what has arrived from the other machine. Drops the connection if it has closed.
 		/// @param timeoutMS How long to wait for something to arrive, in milliseconds.

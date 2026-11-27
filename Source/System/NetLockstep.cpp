@@ -28,7 +28,15 @@ bool NetLockstep::s_ApplyingInput = false;
 int NetLockstep::s_Socket = -1;
 int NetLockstep::s_LocalPlayer = 0;
 long long NetLockstep::s_SimUpdate = 0;
-long long NetLockstep::s_RemoteCompleteThrough = NetLockstep::c_InputDelay;
+long long NetLockstep::s_RemoteCompleteThrough = 0;
+std::string NetLockstep::s_HostPort;
+std::string NetLockstep::s_JoinAddress;
+long long NetLockstep::s_InputDelay = 3;
+bool NetLockstep::s_InputDelayIsKnown = false;
+int NetLockstep::s_ArtificialLatencyMS = 0;
+std::deque<std::pair<std::chrono::steady_clock::time_point, std::string>> NetLockstep::s_HeldBackMessages;
+long long NetLockstep::s_StalledUpdateCount = 0;
+double NetLockstep::s_StalledMS = 0;
 long long NetLockstep::s_MatchedHashCount = 0;
 std::vector<std::string> NetLockstep::s_PendingLines;
 std::map<long long, std::vector<std::string>> NetLockstep::s_InputLines[NetLockstep::c_PlayerCount];
@@ -43,7 +51,29 @@ namespace {
 	}
 } // namespace
 
-void NetLockstep::Host(const std::string& port) {
+void NetLockstep::Connect() {
+	if (!s_HostPort.empty()) {
+		Host();
+		// The first update that input can be for is the one after the delay, so there is none to wait for before that.
+		s_RemoteCompleteThrough = s_InputDelay;
+		SendNow(std::format("0 d {}\n", s_InputDelay));
+	} else if (!s_JoinAddress.empty()) {
+		Join();
+		auto waitStart = std::chrono::steady_clock::now();
+		while (!s_InputDelayIsKnown) {
+			if (s_Socket < 0 || std::chrono::steady_clock::now() - waitStart > std::chrono::seconds(10)) {
+				FailSetup("The host didn't say which input delay to use!");
+			}
+			Receive(100);
+		}
+	} else {
+		return;
+	}
+	std::cerr << "Lockstep: input is delayed by " << s_InputDelay << " updates, and what this machine sends by another " << s_ArtificialLatencyMS << " ms." << std::endl;
+}
+
+void NetLockstep::Host() {
+	const std::string& port = s_HostPort;
 	int listener = socket(AF_INET, SOCK_STREAM, 0);
 	int enable = 1;
 	setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
@@ -65,7 +95,8 @@ void NetLockstep::Host(const std::string& port) {
 	Start(connection, 0);
 }
 
-void NetLockstep::Join(const std::string& address) {
+void NetLockstep::Join() {
+	const std::string& address = s_JoinAddress;
 	size_t portStart = address.rfind(':');
 	if (portStart == std::string::npos) {
 		FailSetup("The address to join has to be given as address:port!");
@@ -149,9 +180,10 @@ void NetLockstep::BeginSimUpdate() {
 		return;
 	}
 	++s_SimUpdate;
+	SendHeldBackMessages();
 
 	// This machine's input since the last update goes to a later update, to give it time to get to the other machine.
-	long long inputUpdate = s_SimUpdate + c_InputDelay;
+	long long inputUpdate = s_SimUpdate + s_InputDelay;
 	std::string message;
 	for (std::string& line: s_PendingLines) {
 		message += std::format("{} {}\n", inputUpdate, line);
@@ -178,7 +210,13 @@ void NetLockstep::BeginSimUpdate() {
 			System::SetQuit();
 			return;
 		}
-		Receive(100);
+		SendHeldBackMessages();
+		// The other machine may be waiting on what is being held back here, so that has to keep going out on time.
+		Receive(s_HeldBackMessages.empty() ? 100 : 2);
+	}
+	if (double waitedMS = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count(); waitedMS > 1.0) {
+		++s_StalledUpdateCount;
+		s_StalledMS += waitedMS;
 	}
 	// Pick up anything else that has arrived, so that state hashes get compared without waiting for the next stall.
 	Receive(0);
@@ -200,6 +238,7 @@ void NetLockstep::Stop() {
 		return;
 	}
 	if (s_Socket >= 0) {
+		SendHeldBackMessages(true);
 		// Closing with input from the other machine left unread could throw away what this machine sent last, so tell the other machine this one is done and read until it is too.
 		shutdown(s_Socket, SHUT_WR);
 		auto waitStart = std::chrono::steady_clock::now();
@@ -209,10 +248,26 @@ void NetLockstep::Stop() {
 		Disconnect();
 	}
 	std::cerr << "Lockstep: ran " << s_SimUpdate << " updates, " << s_MatchedHashCount << " state hashes matched" << (s_Desynced ? ", and then the machines DESYNCED." : ".") << std::endl;
+	std::cerr << std::format("Lockstep: {} updates waited for the other player's input, for {:.0f} ms in total.", s_StalledUpdateCount, s_StalledMS) << std::endl;
 	s_Active = false;
 }
 
 void NetLockstep::Send(const std::string& text) {
+	if (s_ArtificialLatencyMS > 0) {
+		s_HeldBackMessages.emplace_back(std::chrono::steady_clock::now() + std::chrono::milliseconds(s_ArtificialLatencyMS), text);
+	} else {
+		SendNow(text);
+	}
+}
+
+void NetLockstep::SendHeldBackMessages(bool everything) {
+	while (!s_HeldBackMessages.empty() && (everything || s_HeldBackMessages.front().first <= std::chrono::steady_clock::now())) {
+		SendNow(s_HeldBackMessages.front().second);
+		s_HeldBackMessages.pop_front();
+	}
+}
+
+void NetLockstep::SendNow(const std::string& text) {
 	size_t sent = 0;
 	while (s_Socket >= 0 && sent < text.size()) {
 		ssize_t result = send(s_Socket, text.data() + sent, text.size() - sent, 0);
@@ -259,7 +314,14 @@ void NetLockstep::HandleRemoteLine(const std::string& line) {
 
 	// The other machine is not to be trusted with how much gets kept around, or with which kinds of input get applied.
 	bool updateIsNear = simUpdate > s_SimUpdate - c_HashInterval * 4 && simUpdate < s_SimUpdate + c_HashInterval * 4;
-	if (content == ".") {
+	if (content.starts_with("d ")) {
+		// Only the joiner takes the input delay, and only before the first update.
+		if (s_LocalPlayer == 1 && s_SimUpdate == 0 && !s_InputDelayIsKnown) {
+			s_InputDelay = std::clamp(std::atoll(content.c_str() + 2), 1LL, 60LL);
+			s_RemoteCompleteThrough = s_InputDelay;
+			s_InputDelayIsKnown = true;
+		}
+	} else if (content == ".") {
 		if (updateIsNear) {
 			s_RemoteCompleteThrough = std::max(s_RemoteCompleteThrough, simUpdate);
 		}

@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--updates", type=int, default=1500, help="how many sim updates to play for (default: %(default)s)")
     parser.add_argument("--input-seeds", type=int, nargs=2, default=[1, 2], metavar=("HOST", "JOINER"), help="the seeds to make each player's random input from (default: %(default)s)")
     parser.add_argument("--port", type=int, default=47531, help="the port to play over (default: %(default)s)")
+    parser.add_argument("--delay", type=int, help="how many sim updates the host has input held back for (default: the game's own)")
+    parser.add_argument("--latency", type=int, default=0, help="how many milliseconds each one holds back what it sends for, which makes for a ping of twice that (default: %(default)s)")
     parser.add_argument("--windowed", action="store_true", help="run both with the game window, audio and real time pacing, instead of headless")
     parser.add_argument("--trace-dir", type=Path, help="where to keep the inputs and traces, instead of a temporary directory")
     parser.add_argument("--timeout", type=int, default=600, help="how many seconds the two can take before they are given up on (default: %(default)s)")
@@ -43,6 +45,7 @@ def main():
             write_test_settings(settings)
             traces.append(trace)
             args = [exe, "-activity", *options.activity, "-sim-updates", str(options.updates), "-input-replay", str(player_input), "-determinism-record", str(trace), *net_args]
+            args += ["-net-latency", str(options.latency)] + (["-net-delay", str(options.delay)] if options.delay else [])
             if not options.windowed:
                 args.append("-headless")
             processes.append(subprocess.Popen(args, stderr=subprocess.PIPE, text=True, env={**os.environ, "CCCP_SETTINGSPATH": str(settings)}))

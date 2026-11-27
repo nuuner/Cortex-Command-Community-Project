@@ -189,13 +189,18 @@ void HandleEarlyMainArgs(int argCount, char** argValue) {
 		} else if (!lastArg && currentArg == "-input-replay") {
 			InputRecorder::StartReplaying(argValue[++i]);
 		} else if (!lastArg && currentArg == "-net-host") {
-			NetLockstep::Host(argValue[++i]);
+			NetLockstep::SetHostPort(argValue[++i]);
 		} else if (!lastArg && currentArg == "-net-join") {
-			NetLockstep::Join(argValue[++i]);
+			NetLockstep::SetJoinAddress(argValue[++i]);
+		} else if (!lastArg && currentArg == "-net-delay") {
+			NetLockstep::SetInputDelay(std::atoll(argValue[++i]));
+		} else if (!lastArg && currentArg == "-net-latency") {
+			NetLockstep::SetArtificialLatency(std::atoi(argValue[++i]));
 		} else if (!lastArg && currentArg == "-seed") {
 			SetRNGSeedOffset(static_cast<uint32_t>(std::atoll(argValue[++i])));
 		}
 	}
+	NetLockstep::Connect();
 }
 
 /// <summary>
