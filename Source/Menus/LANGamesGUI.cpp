@@ -115,7 +115,11 @@ void LANGamesGUI::UpdateLobby() {
 	m_LobbyPlayersLabel->SetText(players);
 	m_LobbyReadyLabel->SetText(ready);
 
-	if (!hasContent) {
+	std::string disagreement = NetLobby::GetDisagreement();
+	if (!disagreement.empty()) {
+		m_LobbyStatusLabel->SetText("You can't play this game: " + disagreement);
+		hasContent = false;
+	} else if (!hasContent) {
 		m_LobbyStatusLabel->SetText("You don't have this Activity or Scene, so you can't play this game.");
 	} else if (!setup.HasPlayersOnTeams()) {
 		m_LobbyStatusLabel->SetText(NetLobby::GetPeerName() + " is still putting the players on teams.");

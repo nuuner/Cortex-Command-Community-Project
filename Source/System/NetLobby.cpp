@@ -9,8 +9,16 @@
 #include "PresetMan.h"
 #include "Scene.h"
 #include "SceneMan.h"
+#include "DataModule.h"
+#include "GameVersion.h"
+#include "MovableMan.h"
+#include "SettingsMan.h"
+#include "TimerMan.h"
+#include "WindowMan.h"
 
 #include <chrono>
+#include <map>
+#include <set>
 #include <sstream>
 
 #include <arpa/inet.h>
@@ -77,9 +85,13 @@ namespace {
 	constexpr char c_ControlSchemeMark = '\x1e'; //!< What comes before the sender's control scheme at the end of a message, which no text has in it.
 	std::string s_PeerControlScheme; //!< The control scheme that the other machine's player plays with, as text.
 
-	/// Takes the sender's control scheme off the end of a message, and returns it.
-	std::string TakeControlScheme(std::string& message) {
-		size_t mark = message.find(c_ControlSchemeMark);
+	constexpr char c_AgreementMark = '\x1d'; //!< What comes before what the sender's simulation depends on, after everything else in a message.
+	constexpr int c_SimVersion = 1; //!< Goes up with every change to the game that makes its simulation play out differently, since builds of the same game version can't be told apart otherwise.
+	std::string s_PeerAgreement; //!< What the other machine's simulation depends on, as its GetAgreementText gave it.
+
+	/// Takes what comes after a mark off the end of a message, and returns it.
+	std::string TakePart(std::string& message, char partMark) {
+		size_t mark = message.find(partMark);
 		if (mark == std::string::npos) {
 			return "";
 		}
@@ -241,7 +253,7 @@ void NetLobby::Leave() {
 }
 
 void NetLobby::StartGame(const Setup& setup) {
-	if (s_State == State::Hosting && IsPeerReady()) {
+	if (s_State == State::Hosting && IsPeerReady() && GetDisagreement().empty()) {
 		s_Setup = setup;
 		s_Starting = true;
 		s_LastSend = {};
@@ -292,7 +304,8 @@ void NetLobby::Update() {
 		socklen_t senderSize = sizeof(sender);
 		for (ssize_t received; (received = recvfrom(s_GameSocket, buffer, sizeof(buffer), MSG_DONTWAIT, reinterpret_cast<sockaddr*>(&sender), &senderSize)) > 0; senderSize = sizeof(sender)) {
 			std::string message(buffer, static_cast<size_t>(received));
-			std::string controlScheme = TakeControlScheme(message);
+			std::string agreement = TakePart(message, c_AgreementMark);
+			std::string controlScheme = TakePart(message, c_ControlSchemeMark);
 			std::vector<std::string> lines = SplitLines(message);
 			bool fromPeer = s_HasPeer && sender.sin_addr.s_addr == s_PeerAddress.sin_addr.s_addr && sender.sin_port == s_PeerAddress.sin_port;
 			if (lines.empty()) {
@@ -304,6 +317,7 @@ void NetLobby::Update() {
 				s_PeerReady = lines[1] == "1";
 				s_PeerName = lines[2].substr(0, 32);
 				s_PeerControlScheme = controlScheme;
+				s_PeerAgreement = agreement;
 			} else if (lines[0] == "L join") {
 				std::string_view full = "L full";
 				sendto(s_GameSocket, full.data(), full.size(), 0, reinterpret_cast<sockaddr*>(&sender), senderSize);
@@ -320,7 +334,7 @@ void NetLobby::Update() {
 		}
 		if (s_HasPeer && now - s_LastSend > c_SendInterval) {
 			s_LastSend = now;
-			std::string text = (s_Starting ? "L start\n" : "L lobby\n") + GetLocalName() + "\n" + s_Setup.ToText() + c_ControlSchemeMark + NetLockstep::GetOwnControlSchemeText();
+			std::string text = (s_Starting ? "L start\n" : "L lobby\n") + GetLocalName() + "\n" + s_Setup.ToText() + c_ControlSchemeMark + NetLockstep::GetOwnControlSchemeText() + c_AgreementMark + GetAgreementText();
 			sendto(s_GameSocket, text.data(), text.size(), 0, reinterpret_cast<sockaddr*>(&s_PeerAddress), sizeof(s_PeerAddress));
 		}
 		if (now - s_LastAnnouncement > c_AnnounceInterval) {
@@ -330,7 +344,8 @@ void NetLobby::Update() {
 	} else if (s_State == State::Joined) {
 		for (ssize_t received; (received = recv(s_GameSocket, buffer, sizeof(buffer), MSG_DONTWAIT)) > 0;) {
 			std::string text(buffer, static_cast<size_t>(received));
-			std::string controlScheme = TakeControlScheme(text);
+			std::string agreement = TakePart(text, c_AgreementMark);
+			std::string controlScheme = TakePart(text, c_ControlSchemeMark);
 			size_t nameStart = text.find('\n');
 			size_t setupStart = nameStart == std::string::npos ? nameStart : text.find('\n', nameStart + 1);
 			bool isStart = text.starts_with("L start\n");
@@ -348,8 +363,9 @@ void NetLobby::Update() {
 					s_PeerName = text.substr(nameStart + 1, setupStart - nameStart - 1).substr(0, 32);
 					s_Setup = setup;
 					s_PeerControlScheme = controlScheme;
+					s_PeerAgreement = agreement;
 					// The host only starts a game that this machine said it was ready for, but it may have changed its mind and that not have got there yet.
-					s_GameIsToStart = isStart && s_Ready && setup.HasPlayersOnTeams() && HasContentFor(setup);
+					s_GameIsToStart = isStart && s_Ready && setup.HasPlayersOnTeams() && HasContentFor(setup) && GetDisagreement().empty();
 				}
 			}
 		}
@@ -361,10 +377,97 @@ void NetLobby::Update() {
 		}
 		if (now - s_LastSend > c_SendInterval) {
 			s_LastSend = now;
-			std::string text = "L join\n" + std::string(s_Ready ? "1" : "0") + "\n" + GetLocalName() + c_ControlSchemeMark + NetLockstep::GetOwnControlSchemeText();
+			std::string text = "L join\n" + std::string(s_Ready ? "1" : "0") + "\n" + GetLocalName() + c_ControlSchemeMark + NetLockstep::GetOwnControlSchemeText() + c_AgreementMark + GetAgreementText();
 			send(s_GameSocket, text.data(), text.size(), 0);
 		}
 	}
+}
+
+std::string NetLobby::GetAgreementText() {
+	std::ostringstream text;
+	text << "game version\t" << c_VersionString << "\n";
+	text << "multiplayer version\t" << c_SimVersion << "\n";
+	// shortcut: mouse positions are shared in game pixels, so both games have to be as many across. Share them in scene units to let this go.
+	text << "game resolution\t" << g_WindowMan.GetResX() << " x " << g_WindowMan.GetResY() << "\n";
+	text << "setting DeltaTime\t" << g_TimerMan.GetDeltaTimeSecs() << "\n";
+	text << "setting EnableCrabBombs\t" << g_SettingsMan.CrabBombsEnabled() << "\n";
+	text << "setting CrabBombThreshold\t" << g_SettingsMan.GetCrabBombThreshold() << "\n";
+	text << "setting AutomaticGoldDeposit\t" << g_SettingsMan.GetAutomaticGoldDeposit() << "\n";
+	text << "setting DisableLuaJIT\t" << g_SettingsMan.DisableLuaJIT() << "\n";
+	text << "setting RecommendedMOIDCount\t" << g_SettingsMan.RecommendedMOIDCount() << "\n";
+	text << "setting PathFinderGridNodeSize\t" << g_SettingsMan.GetPathFinderGridNodeSize() << "\n";
+	text << "setting AIUpdateInterval\t" << g_SettingsMan.GetAIUpdateInterval() << "\n";
+	text << "setting ScrapCompactingHeight\t" << g_SceneMan.GetScrapCompactingHeight() << "\n";
+	text << "setting EnableParticleSettling\t" << g_MovableMan.IsParticleSettlingEnabled() << "\n";
+	text << "setting EnableMOSubtraction\t" << g_MovableMan.IsMOSubtractionEnabled() << "\n";
+	text << "setting MaxUnheldItems\t" << g_MovableMan.GetMaxDroppedItems() << "\n";
+	std::set<std::string> globalScripts;
+	for (const auto& [scriptName, enabled]: g_SettingsMan.GetEnabledGlobalScriptMap()) {
+		if (enabled) {
+			globalScripts.insert(scriptName);
+		}
+	}
+	for (const std::string& scriptName: globalScripts) {
+		text << "global script " << scriptName << "\ton\n";
+	}
+	// shortcut: a mod is told by its name and version number alone, so two machines with different files under the same name and version pass. Compare a hash of each mod's files if that bites.
+	std::string moduleOrder;
+	for (int module = 0; module < g_PresetMan.GetTotalModuleCount(); ++module) {
+		const DataModule* dataModule = g_PresetMan.GetDataModule(module);
+		if (dataModule && !dataModule->IsUserdata()) {
+			text << "mod " << dataModule->GetFileName() << "\tversion " << dataModule->GetVersionNumber() << "\n";
+			moduleOrder += dataModule->GetFileName() + " ";
+		}
+	}
+	// Which mod comes before which decides the numbers that the game knows them by.
+	text << "mod loading order\t" << moduleOrder << "\n";
+	return text.str();
+}
+
+std::string NetLobby::DescribeDisagreement(const std::string& ownText, const std::string& peerText, const std::string& peerName) {
+	if (ownText == peerText) {
+		return "";
+	}
+	auto readValues = [](const std::string& text) {
+		std::map<std::string, std::string> values;
+		for (const std::string& line: SplitLines(text)) {
+			if (size_t tab = line.find('\t'); tab != std::string::npos) {
+				values[line.substr(0, tab)] = line.substr(tab + 1);
+			}
+		}
+		return values;
+	};
+	std::map<std::string, std::string> ownValues = readValues(ownText);
+	std::map<std::string, std::string> peerValues = readValues(peerText);
+	if (peerValues.empty()) {
+		return peerName + " has a version of the game that can't play with yours.";
+	}
+	// The other machine is not to be trusted with how much text it gets shown.
+	auto shown = [](const std::string& text) { return text.substr(0, 48); };
+	// What only one of the two has comes first, since a mod that one is missing also throws off the loading order.
+	for (const auto& [name, value]: ownValues) {
+		if (!peerValues.contains(name)) {
+			return "You have the " + shown(name) + ", and " + peerName + " doesn't.";
+		}
+	}
+	for (const auto& [name, value]: peerValues) {
+		if (!ownValues.contains(name)) {
+			return peerName + " has the " + shown(name) + ", and you don't.";
+		}
+	}
+	for (const auto& [name, value]: ownValues) {
+		if (const std::string& peerValue = peerValues.at(name); value != peerValue) {
+			if (value.size() > 24 || peerValue.size() > 24) {
+				return "You and " + peerName + " have a different " + shown(name) + ".";
+			}
+			return "You and " + peerName + " have a different " + shown(name) + ": yours is " + value + ", theirs is " + peerValue + ".";
+		}
+	}
+	return "";
+}
+
+std::string NetLobby::GetDisagreement() {
+	return s_HasPeer ? DescribeDisagreement(GetAgreementText(), s_PeerAgreement, s_PeerName) : "";
 }
 
 std::string NetLobby::GetOwnControlsName() {

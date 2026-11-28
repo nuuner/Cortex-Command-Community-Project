@@ -117,6 +117,21 @@ namespace RTE {
 		/// shortcut: this sets player 1's control scheme to that device's usual keys or buttons, replacing mappings of their own. Leave those be if someone minds.
 		static void CycleOwnControls();
 
+		/// Gets what the simulation depends on that this machine could have differently from another one: the game version, the mods, the resolution and some settings.
+		/// @return A line for each of those, as what it is called, a tab, and what this machine has for it.
+		static std::string GetAgreementText();
+
+		/// Finds what two machines have differently, out of what their simulations depend on.
+		/// @param ownText What this machine has, as GetAgreementText gives it.
+		/// @param peerText What the other machine has.
+		/// @param peerName What the other machine calls itself.
+		/// @return The first difference as a sentence to show to the player, or nothing if a game between the two can stay in sync.
+		static std::string DescribeDisagreement(const std::string& ownText, const std::string& peerText, const std::string& peerName);
+
+		/// Gets why this machine and the other one can't play together, if they can't.
+		/// @return The reason as a sentence to show to the player, or nothing if they can, or if the other machine isn't there.
+		static std::string GetDisagreement();
+
 		/// Gets what went wrong last, to show to the player.
 		static const std::string& GetError() { return s_Error; }
 
