@@ -66,6 +66,10 @@ namespace RTE {
 		/// @param inputEvent The SDL input event to queue.
 		void HandleInputEvent(const SDL_Event& inputEvent);
 
+		/// Handles an input event that came from this machine's own devices, rather than from a recording or from another machine.
+		/// @param inputEvent The SDL input event to handle.
+		void HandleLocalInputEvent(const SDL_Event& inputEvent);
+
 		/// Updates the state of this UInputMan. Supposed to be done every frame.
 		/// @return An error return value signaling success or any particular failure. Anything below 0 is an error signal.
 		int Update();
@@ -320,6 +324,13 @@ namespace RTE {
 		/// Gets mouse sensitivity while in Activity.
 		/// @return The current mouse sensitivity.
 		float GetMouseSensitivity() const { return m_MouseSensitivity; }
+
+		/// Gets how many pixels of the window a pixel of the game takes up, as far as mouse positions go.
+		/// That is 1 while input is recorded, replayed or played in lockstep: mouse positions are in pixels of the game then, since each machine's window is scaled up its own way and the simulation can't be going by that.
+		float GetMouseResMultiplier() const;
+
+		/// Gets how many times bigger a mouse position is to the window than it is to the game's own mouse handling. This is 1, unless mouse positions are in pixels of the game.
+		float GetWindowMouseScale() const;
 
 		/// Sets mouse sensitivity while in Activity.
 		/// @param sensitivity New sensitivity value.

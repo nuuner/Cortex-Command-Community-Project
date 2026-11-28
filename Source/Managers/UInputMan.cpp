@@ -122,8 +122,8 @@ int UInputMan::Initialize() {
 	m_PlayerScreenMouseBounds = {
 	    0,
 	    0,
-	    static_cast<int>(g_FrameMan.GetPlayerFrameBufferWidth(Players::NoPlayer) * g_WindowMan.GetResMultiplier()),
-	    static_cast<int>(g_FrameMan.GetPlayerFrameBufferHeight(Players::NoPlayer) * g_WindowMan.GetResMultiplier())};
+	    static_cast<int>(g_FrameMan.GetPlayerFrameBufferWidth(Players::NoPlayer) * GetMouseResMultiplier()),
+	    static_cast<int>(g_FrameMan.GetPlayerFrameBufferHeight(Players::NoPlayer) * GetMouseResMultiplier())};
 
 	return 0;
 }
@@ -371,6 +371,19 @@ bool UInputMan::AllPlayerInputDevicesKnown(const std::vector<int>& humanPlayers)
 	return true;
 }
 
+float UInputMan::GetMouseResMultiplier() const {
+	return InputRecorder::IsActive() ? 1.0F : g_WindowMan.GetResMultiplier();
+}
+
+float UInputMan::GetWindowMouseScale() const {
+	return g_WindowMan.GetResMultiplier() / GetMouseResMultiplier();
+}
+
+/// Scales a box of mouse positions up to the window's pixels, for handing it to SDL.
+static SDL_Rect ToWindowMouseRect(const SDL_Rect& rect, float scale) {
+	return {static_cast<int>(rect.x * scale), static_cast<int>(rect.y * scale), static_cast<int>(rect.w * scale), static_cast<int>(rect.h * scale)};
+}
+
 Vector UInputMan::GetAbsoluteMousePosition(int whichPlayer) const {
 	if (!m_EnableMultiMouseKeyboard || (whichPlayer == Players::NoPlayer)) {
 		return m_MouseStates.at(0).position;
@@ -430,7 +443,7 @@ void UInputMan::SetMouseValueAngle(float angle, int whichPlayer) {
 void UInputMan::SetMousePos(const Vector& newPos, int whichPlayer) {
 	// Only mess with the mouse if the original mouse position is not above the screen and may be grabbing the title bar of the game window
 	if (!m_DisableMouseMoving && !m_TrapMousePos && ((whichPlayer == Players::NoPlayer) || (m_ControlScheme.at(whichPlayer).GetDevice() == InputDevice::DEVICE_MOUSE_KEYB && !m_EnableMultiMouseKeyboard))) {
-		SDL_WarpMouseInWindow(g_WindowMan.GetWindow(), newPos.GetFloorIntX(), newPos.GetFloorIntY());
+		SDL_WarpMouseInWindow(g_WindowMan.GetWindow(), newPos.GetFloorIntX() * GetWindowMouseScale(), newPos.GetFloorIntY() * GetWindowMouseScale());
 	} else if (whichPlayer < Players::MaxPlayerCount && whichPlayer > Players::NoPlayer && m_ControlScheme.at(whichPlayer).GetDevice() == InputDevice::DEVICE_MOUSE_KEYB) {
 		m_MouseStates[m_ControlScheme.at(whichPlayer).GetDeviceID().mouseKeyboard.mouse].position = newPos;
 	}
@@ -524,7 +537,7 @@ void UInputMan::ForceMouseWithinBox(int x, int y, int width, int height, int whi
 			if (!WithinBox(m_MouseStates[0].position, static_cast<float>(leftPos), static_cast<float>(topPos), static_cast<float>(rightMostPos), static_cast<float>(bottomMostPos))) {
 				int limitX = std::clamp(m_MouseStates[0].position.GetFloorIntX(), leftPos, rightMostPos);
 				int limitY = std::clamp(m_MouseStates[0].position.GetFloorIntY(), topPos, bottomMostPos);
-				SDL_WarpMouseInWindow(g_WindowMan.GetWindow(), limitX, limitY);
+				SDL_WarpMouseInWindow(g_WindowMan.GetWindow(), limitX * GetWindowMouseScale(), limitY * GetWindowMouseScale());
 			}
 		} else {
 			SDL_Rect newMouseBounds = {
@@ -537,7 +550,8 @@ void UInputMan::ForceMouseWithinBox(int x, int y, int width, int height, int whi
 				g_ConsoleMan.PrintString("ERROR: Trying to force mouse wihin a box that is outside the player screen bounds!");
 				newMouseBounds = m_PlayerScreenMouseBounds;
 			}
-			SDL_SetWindowMouseRect(g_WindowMan.GetWindow(), &newMouseBounds);
+			SDL_Rect windowMouseBounds = ToWindowMouseRect(newMouseBounds, GetWindowMouseScale());
+			SDL_SetWindowMouseRect(g_WindowMan.GetWindow(), &windowMouseBounds);
 		}
 	} else if (whichPlayer != Players::NoPlayer && m_ControlScheme[whichPlayer].GetDevice() == InputDevice::DEVICE_MOUSE_KEYB && m_EnableMultiMouseKeyboard) {
 		if (auto mouse = m_MouseStates.find(m_ControlScheme[whichPlayer].GetDeviceID().mouseKeyboard.mouse); mouse != m_MouseStates.end()) {
@@ -549,7 +563,7 @@ void UInputMan::ForceMouseWithinBox(int x, int y, int width, int height, int whi
 }
 
 void UInputMan::ForceMouseWithinPlayerScreen(bool force, int whichPlayer) {
-	float resMultiplier = g_WindowMan.GetResMultiplier();
+	float resMultiplier = GetMouseResMultiplier();
 
 	if (force && (whichPlayer >= Players::PlayerOne && whichPlayer < Players::MaxPlayerCount)) {
 		int screenWidth = g_FrameMan.GetPlayerFrameBufferWidth(whichPlayer) * resMultiplier;
@@ -584,7 +598,8 @@ void UInputMan::ForceMouseWithinPlayerScreen(bool force, int whichPlayer) {
 		if (g_WindowMan.FullyCoversAllDisplays() || m_EnableMultiMouseKeyboard) {
 			ForceMouseWithinBox(0, 0, m_PlayerScreenMouseBounds.w, m_PlayerScreenMouseBounds.h, whichPlayer);
 		} else {
-			SDL_SetWindowMouseRect(g_WindowMan.GetWindow(), &m_PlayerScreenMouseBounds);
+			SDL_Rect windowMouseBounds = ToWindowMouseRect(m_PlayerScreenMouseBounds, GetWindowMouseScale());
+			SDL_SetWindowMouseRect(g_WindowMan.GetWindow(), &windowMouseBounds);
 		}
 	} else {
 		// Set the mouse bounds to the whole window so ForceMouseWithinBox is not stuck being relative to some player screen, because it can still bind the mouse even if this doesn't.
@@ -866,6 +881,18 @@ bool UInputMan::GetJoystickDirectionState(int whichJoy, int whichAxis, int which
 	return false;
 }
 
+void UInputMan::HandleLocalInputEvent(const SDL_Event& inputEvent) {
+	SDL_Event event = inputEvent;
+	// Input that gets recorded, or sent to another machine in lockstep, has to mean the same on a machine whose window is scaled up differently and whose mouse sensitivity is set differently. So both are worked into the mouse movement here, and left alone after.
+	if (event.type == SDL_EVENT_MOUSE_MOTION && InputRecorder::IsActive()) {
+		event.motion.x /= g_WindowMan.GetResMultiplier();
+		event.motion.y /= g_WindowMan.GetResMultiplier();
+		event.motion.xrel *= m_MouseSensitivity;
+		event.motion.yrel *= m_MouseSensitivity;
+	}
+	HandleInputEvent(event);
+}
+
 void UInputMan::HandleInputEvent(const SDL_Event& inputEvent) {
 	// Mouse motion that came in while it was disabled isn't recorded, so recorded motion is always meant to be handled.
 	if (inputEvent.type == SDL_EVENT_MOUSE_MOTION && m_DisableMouseMoving && !InputRecorder::IsReplaying()) {
@@ -1052,8 +1079,9 @@ void UInputMan::HandleInputEvent(const SDL_Event& inputEvent) {
 }
 
 int UInputMan::Update() {
+	// Mouse movement that is recorded or sent to another machine already has the sensitivity in it, see HandleLocalInputEvent.
 	for (auto& [mouseID, mouse]: m_MouseStates) {
-		mouse.relativeMotion *= m_MouseSensitivity;
+		mouse.relativeMotion *= InputRecorder::IsActive() ? 1.0F : m_MouseSensitivity;
 	}
 
 	UpdateMouseInput();
@@ -1214,8 +1242,8 @@ void UInputMan::UpdateMouseInput() {
 
 	// Enable the mouse cursor positioning again after having been disabled. Only do this when the mouse is within the drawing area so it
 	// won't cause the whole window to move if the user clicks the title bar and unintentionally drags it due to programmatic positioning.
-	int mousePosX = m_MouseStates.at(0).position.m_X / g_WindowMan.GetResMultiplier();
-	int mousePosY = m_MouseStates.at(0).position.m_Y / g_WindowMan.GetResMultiplier();
+	int mousePosX = m_MouseStates.at(0).position.m_X / GetMouseResMultiplier();
+	int mousePosY = m_MouseStates.at(0).position.m_Y / GetMouseResMultiplier();
 	if (m_DisableMouseMoving && m_PrepareToEnableMouseMoving && (mousePosX >= 0 && mousePosX < g_WindowMan.GetResX() && mousePosY >= 0 && mousePosY < g_WindowMan.GetResY())) {
 		m_DisableMouseMoving = m_PrepareToEnableMouseMoving = false;
 	}

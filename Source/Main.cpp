@@ -299,7 +299,7 @@ void PollSDLEvents() {
 			case SDL_EVENT_JOYSTICK_REMOVED :
 				// The recorded input stands in for the real devices while replaying.
 				if (!InputRecorder::IsReplaying()) {
-					g_UInputMan.HandleInputEvent(sdlEvent);
+					g_UInputMan.HandleLocalInputEvent(sdlEvent);
 				}
 				break;
 			default:

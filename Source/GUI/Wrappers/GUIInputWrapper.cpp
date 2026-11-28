@@ -58,8 +58,8 @@ void GUIInputWrapper::Update() {
 
 	// Update the mouse position of this GUIInput, based on the SDL mouse vars (which may have been altered by joystick or keyboard input).
 	Vector mousePos = g_UInputMan.GetAbsoluteMousePosition(m_Player);
-	m_MouseX = static_cast<int>(mousePos.GetX() / static_cast<float>(g_WindowMan.GetResMultiplier()));
-	m_MouseY = static_cast<int>(mousePos.GetY() / static_cast<float>(g_WindowMan.GetResMultiplier()));
+	m_MouseX = static_cast<int>(mousePos.GetX() / g_UInputMan.GetMouseResMultiplier());
+	m_MouseY = static_cast<int>(mousePos.GetY() / g_UInputMan.GetMouseResMultiplier());
 }
 
 void GUIInputWrapper::StartTextInput() {
@@ -142,7 +142,7 @@ void GUIInputWrapper::UpdateMouseInput() {
 
 void GUIInputWrapper::UpdateKeyJoyMouseInput(float keyElapsedTime) {
 	// TODO Try to not use magic numbers throughout this method.
-	float mouseDenominator = g_WindowMan.GetResMultiplier();
+	float mouseDenominator = g_UInputMan.GetMouseResMultiplier();
 	Vector joyKeyDirectional = g_UInputMan.GetMenuDirectional() * 5;
 
 	// See how much to accelerate the joystick input based on how long the stick has been pushed around.
