@@ -1071,8 +1071,9 @@ bool NetLockstep::RebuildGame() {
 	int epoch = s_Epoch + 1;
 	// Everything that the simulation goes by and that isn't in the save has to end up the same on both machines: how much time has passed, which unique IDs get handed out next, and the random numbers.
 	// Each rebuild hands out unique IDs from a range of its own, so that none of them can be one that an object from before still has.
+	static_assert((int64_t(c_MaxReloadCount) + 1) << 32 < int64_t(1) << MovableObject::c_UniqueIDCountBits, "The last rebuild has to have unique IDs left to hand out.");
 	g_TimerMan.ResetTime();
-	MovableObject::SetUniqueIDCounters(std::vector<int64_t>(MovableObject::GetUniqueIDCounters().size(), static_cast<int64_t>(epoch) << 36));
+	MovableObject::SetUniqueIDCounters(std::vector<int64_t>(MovableObject::GetUniqueIDCounters().size(), static_cast<int64_t>(epoch) << 32));
 	SeedSimRandomGenerators(static_cast<uint64_t>(epoch));
 	bool loaded = g_ActivityMan.LoadAndLaunchGame(GetReloadSaveName());
 	std::remove(GetReloadSavePath().c_str());

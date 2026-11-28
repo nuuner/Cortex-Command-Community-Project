@@ -31,28 +31,36 @@ namespace RTE {
 		/// @return Uniformly distributed random number in the range [-1, 1].
 		template <typename floatType = float>
 		typename std::enable_if<std::is_floating_point<floatType>::value, floatType>::type RandomNormalNum() {
-			return std::uniform_real_distribution<floatType>(floatType(-1.0), std::nextafter(floatType(1.0), std::numeric_limits<floatType>::max()))(m_RNG);
+			return RandomNum<floatType>() * floatType(2.0) - floatType(1.0);
 		}
 
 		/// Function template specialization for int types which returns a uniformly distributed random number in the range [-1, 1].
 		/// @return Uniformly distributed random number in the range [-1, 1].
 		template <typename intType>
 		typename std::enable_if<std::is_integral<intType>::value, intType>::type RandomNormalNum() {
-			return std::uniform_int_distribution<intType>(intType(-1), intType(1))(m_RNG);
+			return RandomNum<intType>(intType(-1), intType(1));
 		}
 
 		/// Function template which returns a uniformly distributed random number in the range [0, 1].
+		/// The standard library's distributions aren't used for any of these, since each standard library makes different numbers from the same generator, and machines playing each other over the network need the same ones.
 		/// @return Uniformly distributed random number in the range [0, 1].
 		template <typename floatType = float>
 		typename std::enable_if<std::is_floating_point<floatType>::value, floatType>::type RandomNum() {
-			return std::uniform_real_distribution<floatType>(floatType(0.0), std::nextafter(floatType(1.0), std::numeric_limits<floatType>::max()))(m_RNG);
+			if constexpr (sizeof(floatType) <= sizeof(float)) {
+				// As many bits as a float holds exactly.
+				return floatType(m_RNG() >> 8) / floatType(0xFFFFFF);
+			} else {
+				uint64_t upper = m_RNG() >> 5;
+				uint64_t lower = m_RNG() >> 6;
+				return floatType(static_cast<double>((upper << 26) | lower) / static_cast<double>((uint64_t(1) << 53) - 1));
+			}
 		}
 
 		/// Function template specialization for int types which returns a uniformly distributed random number in the range [0, 1].
 		/// @return Uniformly distributed random number in the range [0, 1].
 		template <typename intType>
 		typename std::enable_if<std::is_integral<intType>::value, intType>::type RandomNum() {
-			return std::uniform_int_distribution<intType>(intType(0), intType(1))(m_RNG);
+			return RandomNum<intType>(intType(0), intType(1));
 		}
 
 		/// Function template which returns a uniformly distributed random number in the range [min, max].
@@ -64,7 +72,7 @@ namespace RTE {
 			if (max < min) {
 				std::swap(min, max);
 			}
-			return (std::uniform_real_distribution<floatType>(floatType(0.0), std::nextafter(max - min, std::numeric_limits<floatType>::max()))(m_RNG) + min);
+			return RandomNum<floatType>() * (max - min) + min;
 		}
 
 		/// Function template specialization for int types which returns a uniformly distributed random number in the range [min, max].
@@ -76,7 +84,9 @@ namespace RTE {
 			if (max < min) {
 				std::swap(min, max);
 			}
-			return (std::uniform_int_distribution<intType>(intType(0), max - min)(m_RNG) + min);
+			// shortcut: very slightly favours some numbers, and only spreads over ranges of up to 2^32 numbers. Reject and redraw if either ever matters.
+			uint64_t rangeSize = static_cast<uint64_t>(max) - static_cast<uint64_t>(min) + 1;
+			return static_cast<intType>(static_cast<uint64_t>(min) + ((static_cast<uint64_t>(m_RNG()) * rangeSize) >> 32));
 		}
 	};
 
