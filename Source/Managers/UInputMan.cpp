@@ -902,6 +902,54 @@ void UInputMan::TakeOverGamepads(const std::array<SDL_JoystickID, Players::MaxPl
 	}
 }
 
+void UInputMan::ResetSharedInputState() {
+	for (auto& [keyboardID, keyboard]: m_KeyboardStates) {
+		keyboard.keyStates.fill(false);
+		keyboard.changedKeyStates.fill(false);
+	}
+	for (auto& [mouseID, mouse]: m_MouseStates) {
+		mouse.state.fill(false);
+		mouse.change.fill(false);
+		mouse.position.Reset();
+		mouse.relativeMotion.Reset();
+		mouse.analogAim.Reset();
+		mouse.wheelChange = 0.0F;
+	}
+	for (std::vector<Gamepad>* gamepads: {&s_PrevJoystickStates, &s_ChangedJoystickStates}) {
+		for (Gamepad& gamepad: *gamepads) {
+			std::fill(gamepad.m_Axis.begin(), gamepad.m_Axis.end(), 0);
+			std::fill(gamepad.m_DigitalAxis.begin(), gamepad.m_DigitalAxis.end(), 0);
+			std::fill(gamepad.m_Buttons.begin(), gamepad.m_Buttons.end(), false);
+		}
+	}
+
+	// What this machine's player is really holding goes back in as new input, which reaches every machine the usual way.
+	if (InputRecorder::IsReplaying()) {
+		return;
+	}
+	int keyCount = 0;
+	const bool* heldKeys = SDL_GetKeyboardState(&keyCount);
+	for (int scancode = 0; heldKeys && scancode < keyCount; ++scancode) {
+		if (heldKeys[scancode]) {
+			SDL_Event keyEvent{};
+			keyEvent.type = SDL_EVENT_KEY_DOWN;
+			keyEvent.key.scancode = static_cast<SDL_Scancode>(scancode);
+			keyEvent.key.down = true;
+			HandleLocalInputEvent(keyEvent);
+		}
+	}
+	SDL_MouseButtonFlags heldButtons = SDL_GetMouseState(nullptr, nullptr);
+	for (int button = SDL_BUTTON_LEFT; button <= SDL_BUTTON_RIGHT; ++button) {
+		if (heldButtons & SDL_BUTTON_MASK(button)) {
+			SDL_Event buttonEvent{};
+			buttonEvent.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+			buttonEvent.button.button = static_cast<Uint8>(button);
+			buttonEvent.button.down = true;
+			HandleLocalInputEvent(buttonEvent);
+		}
+	}
+}
+
 void UInputMan::GiveBackGamepads() {
 	if (m_OwnJoystickStates.empty()) {
 		return;
@@ -1281,15 +1329,8 @@ void UInputMan::UpdateMouseInput() {
 	// won't cause the whole window to move if the user clicks the title bar and unintentionally drags it due to programmatic positioning.
 	int mousePosX = m_MouseStates.at(0).position.m_X / GetMouseResMultiplier();
 	int mousePosY = m_MouseStates.at(0).position.m_Y / GetMouseResMultiplier();
-	if (InputRecorder::IsActive()) {
-		// The mouse positions that the game goes by only change with the input that gets through, which none does while mouse movement is disabled. So this has to go by where the mouse really is.
-		float windowMouseX = 0.0F;
-		float windowMouseY = 0.0F;
-		SDL_GetMouseState(&windowMouseX, &windowMouseY);
-		mousePosX = static_cast<int>(windowMouseX / g_WindowMan.GetResMultiplier());
-		mousePosY = static_cast<int>(windowMouseY / g_WindowMan.GetResMultiplier());
-	}
-	if (m_DisableMouseMoving && m_PrepareToEnableMouseMoving && (mousePosX >= 0 && mousePosX < g_WindowMan.GetResX() && mousePosY >= 0 && mousePosY < g_WindowMan.GetResY())) {
+	// When input is recorded or shared with another machine, mouse movement is enabled right away instead. Where this machine's mouse is can't be allowed to decide it, since the mouse positions of the simulation get kept within the screen depending on this, and that has to happen in the same update on every machine.
+	if (m_DisableMouseMoving && m_PrepareToEnableMouseMoving && (InputRecorder::IsActive() || (mousePosX >= 0 && mousePosX < g_WindowMan.GetResX() && mousePosY >= 0 && mousePosY < g_WindowMan.GetResY()))) {
 		m_DisableMouseMoving = m_PrepareToEnableMouseMoving = false;
 	}
 }

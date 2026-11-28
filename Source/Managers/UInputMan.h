@@ -74,6 +74,11 @@ namespace RTE {
 		/// @param joystickIDs The ID of the gamepad in each slot, with 0 for none. A player whose control scheme is for gamepad 1 goes by the first slot, and so on.
 		void TakeOverGamepads(const std::array<SDL_JoystickID, Players::MaxPlayerCount>& joystickIDs);
 
+		/// Sets all keys, buttons, sticks and mouse positions back to nothing being pressed or moved, and then presses the keys and mouse buttons that are really held on this machine again.
+		/// Machines that play in lockstep do this in the same update when their games are made the same again, since what input each of them has seen so far is part of what has to be the same.
+		/// shortcut: a stick that is held still stays at rest until it is moved again, and so does the mouse position.
+		void ResetSharedInputState();
+
 		/// Puts the real gamepads back in place after TakeOverGamepads.
 		void GiveBackGamepads();
 

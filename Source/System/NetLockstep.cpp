@@ -218,6 +218,8 @@ namespace {
 
 	/// Starts all the random number generators that the simulation uses over from a seed. Doing this with the same seed on both machines gets their random numbers matching, whatever they were up to.
 	void SeedSimRandomGenerators(uint64_t seed) {
+		// Every time the machines are made the same, what input each has seen so far has to be made the same along with the rest.
+		g_UInputMan.ResetSharedInputState();
 		g_RandomGenerator.Seed(seed);
 		// Which script state the next scripted object goes to decides which random numbers its scripts get.
 		g_LuaMan.RestartScriptStateAssignment();
