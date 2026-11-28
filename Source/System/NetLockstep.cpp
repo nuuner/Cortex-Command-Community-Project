@@ -552,6 +552,32 @@ void NetLockstep::BeginSimUpdate() {
 	}
 }
 
+std::vector<std::pair<float, float>> NetLockstep::GetPendingLocalMouseMotion() {
+	std::vector<std::pair<float, float>> motions;
+	if (!s_Active) {
+		return motions;
+	}
+	auto addUp = [&motions](const std::vector<std::string>& lines) {
+		std::pair<float, float> motion{0.0F, 0.0F};
+		for (const std::string& line: lines) {
+			float x = 0.0F;
+			float y = 0.0F;
+			// See InputRecorder::EventToLine: the device, the position, and then how far it moved.
+			if (std::sscanf(line.c_str(), "m %*u %*f %*f %f %f", &x, &y) == 2) {
+				motion.first += x;
+				motion.second += y;
+			}
+		}
+		motions.emplace_back(motion);
+	};
+	for (const auto& [simUpdate, lines]: s_InputLines[s_LocalPlayer]) {
+		addUp(lines);
+	}
+	// What came in since the last update goes to an update after all of those.
+	addUp(s_PendingLines);
+	return motions;
+}
+
 std::string NetLockstep::AdaptInputDelay() {
 	// The ping is measured even when the delay is fixed, since it is shown to the player.
 	std::string pingLine;

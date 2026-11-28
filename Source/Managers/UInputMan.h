@@ -131,6 +131,12 @@ namespace RTE {
 		/// @return The analog axis values ranging between -1.0 to 1.0, in both axes.
 		Vector AnalogAimValues(int whichPlayer = 0);
 
+		/// Gets where a player's analog aim will be once the simulation has got all of their input. In lockstep, this machine's own mouse movement is held back for a few updates, and this is the aim with that movement already in it.
+		/// Only for drawing: the simulation has to go by AnalogAimValues, which is the same on every machine.
+		/// @param whichPlayer Which player to check for.
+		/// @return The analog axis values ranging between -1.0 to 1.0, in both axes.
+		Vector InstantAnalogAimValues(int whichPlayer = 0);
+
 		/// Gets whether a specific input element was held during the last update.
 		/// @param whichPlayer Which player to check for.
 		/// @param whichElement Which element to check for.

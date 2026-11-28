@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace RTE {
 
@@ -64,6 +66,10 @@ namespace RTE {
 		/// Gets which player this machine is.
 		/// @return The player.
 		static int GetLocalPlayer() { return s_LocalPlayer; }
+
+		/// Gets the mouse movement of this machine's player that the simulation hasn't got to yet, because of the input delay. For showing the player where they are aiming without that delay.
+		/// @return How far the mouse moved, summed up for each simulation update that is yet to apply some, in the order they will.
+		static std::vector<std::pair<float, float>> GetPendingLocalMouseMotion();
 
 		/// Gets this machine's own control scheme as text, for the other machine to give this machine's player the same one. It is the one that player 1 has in the settings.
 		/// @return The control scheme.

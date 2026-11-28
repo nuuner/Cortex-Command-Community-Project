@@ -421,6 +421,20 @@ Vector UInputMan::GetMouseMovement(int whichPlayer) const {
 	return Vector(0, 0);
 }
 
+Vector UInputMan::InstantAnalogAimValues(int whichPlayer) {
+	Vector aim = AnalogAimValues(whichPlayer);
+	if (NetLockstep::IsActive() && whichPlayer == NetLockstep::GetLocalPlayer() && m_ControlScheme.at(whichPlayer).GetDevice() == InputDevice::DEVICE_MOUSE_KEYB) {
+		aim *= m_MouseTrapRadius;
+		// The same steps as UpdateMouseInput will take with this movement, one update at a time.
+		for (const auto& [x, y]: NetLockstep::GetPendingLocalMouseMotion()) {
+			aim += Vector(x, y) * 3;
+			aim.CapMagnitude(m_MouseTrapRadius);
+		}
+		aim /= m_MouseTrapRadius;
+	}
+	return aim;
+}
+
 void UInputMan::SetMouseValueMagnitude(float magCap, int whichPlayer) {
 	if (whichPlayer != Players::NoPlayer && m_ControlScheme.at(whichPlayer).GetDevice() == InputDevice::DEVICE_MOUSE_KEYB) {
 		if (!m_EnableMultiMouseKeyboard) {

@@ -21,6 +21,8 @@
 #include "AllegroBitmap.h"
 
 #include "PrimitiveMan.h"
+#include "NetLockstep.h"
+#include "UInputMan.h"
 
 #include "tracy/Tracy.hpp"
 
@@ -2766,6 +2768,36 @@ void AHuman::DrawHUD(BITMAP* pTargetBitmap, const Vector& targetPos, int whichSc
 			DrawThrowingReticle(pTargetBitmap, targetPos, GetThrowProgress());
 		} else if (m_Controller.IsState(AIM_SHARP) || (m_Controller.IsPlayerControlled() && !m_Controller.IsState(PIE_MENU_ACTIVE))) {
 			m_pFGArm->GetHeldDevice()->DrawHUD(pTargetBitmap, targetPos, whichScreen, m_Controller.IsState(AIM_SHARP) && m_Controller.IsPlayerControlled());
+		}
+	}
+
+	// In lockstep this machine's input is held back for a few updates, so the aiming dots trail the mouse. This cross shows where the aim is going to be once the simulation has caught up, so that aiming feels immediate.
+	// shortcut: only the cross is ahead. The camera and how the arm and weapon are drawn still follow the simulation, and ACrabs get no cross. Do those next if the cross proves itself.
+	if (int player = m_Controller.GetPlayer(); NetLockstep::IsActive() && m_Controller.IsPlayerControlled() && player == NetLockstep::GetLocalPlayer() && m_Controller.IsMouseControlled() && !m_Controller.IsState(PIE_MENU_ACTIVE) && m_Status != INACTIVE && m_ArmsState != THROWING_PREP) {
+		Vector simAim = g_UInputMan.AnalogAimValues(player);
+		Vector instantAim = g_UInputMan.InstantAnalogAimValues(player);
+		const float analogDeadzone = 0.1F;
+		if (simAim.MagnitudeIsGreaterThan(analogDeadzone) && instantAim.MagnitudeIsGreaterThan(analogDeadzone)) {
+			// Where the aiming dots end, which is then turned about the actor by as much as the aim is yet to turn.
+			Matrix aimMatrix(m_HFlipped ? -m_AimAngle : m_AimAngle);
+			aimMatrix.SetXFlipped(m_HFlipped);
+			HeldDevice* heldDevice = GetEquippedItem();
+			Vector aimPoint = Vector(heldDevice ? std::max(heldDevice->GetSharpLength() * m_SharpAimProgress, 20.0F) : std::max(m_AimDistance, 40.0F), 0) * aimMatrix;
+			aimPoint += (heldDevice ? heldDevice->GetMuzzlePos() : m_Pos) - m_Pos;
+			aimPoint.RadRotate(instantAim.GetAbsRadAngle() - simAim.GetAbsRadAngle());
+			aimPoint += m_Pos;
+
+			g_PostProcessMan.RegisterGlowDotEffect(aimPoint, YellowDot, 127);
+			aimPoint -= targetPos;
+			g_SceneMan.WrapPosition(aimPoint);
+			int x = aimPoint.GetFloorIntX();
+			int y = aimPoint.GetFloorIntY();
+			for (int arm = 2; arm <= 3; ++arm) {
+				putpixel(pTargetBitmap, x + arm, y, g_YellowGlowColor);
+				putpixel(pTargetBitmap, x - arm, y, g_YellowGlowColor);
+				putpixel(pTargetBitmap, x, y + arm, g_YellowGlowColor);
+				putpixel(pTargetBitmap, x, y - arm, g_YellowGlowColor);
+			}
 		}
 	}
 
