@@ -1281,6 +1281,14 @@ void UInputMan::UpdateMouseInput() {
 	// won't cause the whole window to move if the user clicks the title bar and unintentionally drags it due to programmatic positioning.
 	int mousePosX = m_MouseStates.at(0).position.m_X / GetMouseResMultiplier();
 	int mousePosY = m_MouseStates.at(0).position.m_Y / GetMouseResMultiplier();
+	if (InputRecorder::IsActive()) {
+		// The mouse positions that the game goes by only change with the input that gets through, which none does while mouse movement is disabled. So this has to go by where the mouse really is.
+		float windowMouseX = 0.0F;
+		float windowMouseY = 0.0F;
+		SDL_GetMouseState(&windowMouseX, &windowMouseY);
+		mousePosX = static_cast<int>(windowMouseX / g_WindowMan.GetResMultiplier());
+		mousePosY = static_cast<int>(windowMouseY / g_WindowMan.GetResMultiplier());
+	}
 	if (m_DisableMouseMoving && m_PrepareToEnableMouseMoving && (mousePosX >= 0 && mousePosX < g_WindowMan.GetResX() && mousePosY >= 0 && mousePosY < g_WindowMan.GetResY())) {
 		m_DisableMouseMoving = m_PrepareToEnableMouseMoving = false;
 	}
