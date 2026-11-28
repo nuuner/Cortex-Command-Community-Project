@@ -23,6 +23,8 @@
 #include "DeterminismChecker.h"
 
 #include <cstring>
+#include <map>
+#include <sstream>
 #include "InputRecorder.h"
 #include "System.h"
 
@@ -679,141 +681,298 @@ Actor* MovableMan::GetUnassignedBrain(int team) const {
 	return 0;
 }
 
-void MovableMan::HashState(StateHasher& hasher) const {
-	auto hashMovableObject = [&hasher](const MovableObject* movableObject) {
+namespace {
+	/// What an MO is compared by between machines: which of the lists it is in, in the order HashState goes through them, which MO it is, and a hash of all that is known about it.
+	// shortcut: raw bytes, so both machines have to be of the same architecture. Give it a byte order once that isn't a given.
+	#pragma pack(push, 1)
+	struct SyncDigestEntry {
+		uint8_t list;
+		int64_t uniqueID;
+		uint64_t hash;
+	};
+	#pragma pack(pop)
+
+	constexpr uint8_t c_FirstNonActorSyncList = 2; //!< The first of the lists that hold other things than Actors.
+
+	void HashMovableObject(StateHasher& hasher, const MovableObject* movableObject) {
 		hasher.Add(movableObject->GetUniqueID());
 		hasher.Add(movableObject->GetPos());
 		hasher.Add(movableObject->GetVel());
 		hasher.Add(movableObject->GetRotAngle());
 		hasher.Add(movableObject->GetAngularVel());
 		hasher.Add(movableObject->IsHFlipped());
-	};
-
-	for (const std::deque<Actor*>* actors: {&m_Actors, &m_AddedActors}) {
-		for (const Actor* actor: *actors) {
-			hashMovableObject(actor);
+		if (const Actor* actor = dynamic_cast<const Actor*>(movableObject)) {
 			hasher.Add(actor->GetTeam());
 			hasher.Add(actor->GetStatus());
 			hasher.Add(actor->GetHealth());
 		}
 	}
-	for (const std::deque<MovableObject*>* movableObjects: {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles}) {
-		for (const MovableObject* movableObject: *movableObjects) {
-			hashMovableObject(movableObject);
-		}
-	}
-}
 
-namespace {
-	/// What HashState goes by for an MO, as it is passed between machines. These are the same machine's bytes on both ends.
-	// shortcut: raw bytes, so both machines have to be of the same architecture. Give it a byte order once that isn't a given.
+	std::vector<SyncDigestEntry> ReadSyncDigest(std::string_view digest) {
+		std::vector<SyncDigestEntry> entries(digest.size() / sizeof(SyncDigestEntry));
+		std::memcpy(entries.data(), digest.data(), entries.size() * sizeof(SyncDigestEntry));
+		return entries;
+	}
+
+	/// All there is to an MOPixel that wasn't made from a preset, like the ones that terrain breaks up into. The text that other MOs are passed along as can't describe these.
 	#pragma pack(push, 1)
-	struct SyncedMOState {
-		int64_t uniqueID;
-		float posX, posY, velX, velY, rotAngle, angularVel;
-		uint8_t hFlipped;
-		uint8_t isActor;
-		int32_t team;
-		int32_t status;
-		float health;
+	struct SyncedLooseMOPixel {
+		float mass, posX, posY, velX, velY, sharpness;
+		double age;
+		uint32_t lifetime;
+		int32_t team, color, trailColor, trailLength;
+		uint8_t material, hitsMOs, getsHitByMOs;
 	};
 	#pragma pack(pop)
 
-	SyncedMOState GetSyncedMOState(const MovableObject* movableObject) {
-		SyncedMOState state{};
-		state.uniqueID = movableObject->GetUniqueID();
-		state.posX = movableObject->GetPos().m_X;
-		state.posY = movableObject->GetPos().m_Y;
-		state.velX = movableObject->GetVel().m_X;
-		state.velY = movableObject->GetVel().m_Y;
-		state.rotAngle = movableObject->GetRotAngle();
-		state.angularVel = movableObject->GetAngularVel();
-		state.hFlipped = movableObject->IsHFlipped();
-		if (const Actor* actor = dynamic_cast<const Actor*>(movableObject)) {
-			state.isActor = 1;
-			state.team = actor->GetTeam();
-			state.status = actor->GetStatus();
-			state.health = actor->GetHealth();
+	constexpr char c_LooseMOPixelMark = '!'; //!< What the copy of such an MOPixel starts with, which the text of an MO never does.
+
+	/// Gets things ready for an MO that was just read from another machine's copy, the way adding it to MovableMan would have, but without moving it.
+	void FinishSyncedMO(MovableObject* movableObject) {
+		movableObject->SetAsAddedToMovableMan();
+		if (MOSRotating* mosRotating = dynamic_cast<MOSRotating*>(movableObject)) {
+			mosRotating->CorrectAttachableAndWoundPositionsAndRotations();
 		}
-		return state;
+		movableObject->NotResting();
+		movableObject->NewFrame();
 	}
 } // namespace
 
-void MovableMan::WriteSyncState(std::string& state) const {
-	// The same MOs in the same order as HashState goes through them.
-	std::vector<const MovableObject*> movableObjects;
+void MovableMan::HashState(StateHasher& hasher) const {
 	for (const std::deque<Actor*>* actors: {&m_Actors, &m_AddedActors}) {
-		movableObjects.insert(movableObjects.end(), actors->begin(), actors->end());
+		for (const Actor* actor: *actors) {
+			HashMovableObject(hasher, actor);
+		}
 	}
-	for (const std::deque<MovableObject*>* others: {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles}) {
-		movableObjects.insert(movableObjects.end(), others->begin(), others->end());
-	}
-
-	uint32_t count = static_cast<uint32_t>(movableObjects.size());
-	state.append(reinterpret_cast<const char*>(&count), sizeof(count));
-	for (const MovableObject* movableObject: movableObjects) {
-		SyncedMOState moState = GetSyncedMOState(movableObject);
-		state.append(reinterpret_cast<const char*>(&moState), sizeof(moState));
+	for (const std::deque<MovableObject*>* movableObjects: {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles}) {
+		for (const MovableObject* movableObject: *movableObjects) {
+			HashMovableObject(hasher, movableObject);
+		}
 	}
 }
 
-bool MovableMan::ApplySyncState(std::string_view& state, int& changedCount) {
-	changedCount = 0;
-	uint32_t count = 0;
-	if (state.size() < sizeof(count)) {
-		return false;
+std::string MovableMan::GetSyncText(const MovableObject* movableObject) const {
+	// shortcut: this is how a saved game writes an MO, which leaves out what scripts keep about it and some of its inner workings. Those start over for an MO that gets recreated from this. Write MOs out in full once that shows.
+	if (const MOPixel* pixel = dynamic_cast<const MOPixel*>(movableObject); pixel && (pixel->GetPresetName().empty() || pixel->GetPresetName() == "None")) {
+		const Atom* atom = pixel->GetAtom();
+		SyncedLooseMOPixel loose{pixel->GetMass(), pixel->GetPos().m_X, pixel->GetPos().m_Y, pixel->GetVel().m_X, pixel->GetVel().m_Y, pixel->GetSharpness(),
+		                         static_cast<double>(pixel->GetAge()), static_cast<uint32_t>(pixel->GetLifetime()), pixel->GetTeam(), pixel->GetColorIndex(), atom->GetTrailColor().GetIndex(), atom->GetTrailLength(),
+		                         static_cast<uint8_t>(atom->GetMaterial()->GetIndex()), pixel->HitsMOs(), pixel->GetsHitByMOs()};
+		return std::string(1, c_LooseMOPixelMark) + std::string(reinterpret_cast<const char*>(&loose), sizeof(loose));
 	}
-	std::memcpy(&count, state.data(), sizeof(count));
-	state.remove_prefix(sizeof(count));
-	if (state.size() / sizeof(SyncedMOState) < count) {
-		return false;
-	}
-	std::string_view moStates = state.substr(0, count * sizeof(SyncedMOState));
-	state.remove_prefix(moStates.size());
+	auto stream = std::make_unique<std::ostringstream>();
+	std::ostringstream* text = stream.get();
+	Writer writer(std::move(stream));
+	g_SceneMan.GetScene()->SaveSceneObject(writer, movableObject, false, true);
+	return text->str();
+}
 
-	std::vector<MovableObject*> movableObjects;
-	for (std::deque<Actor*>* actors: {&m_Actors, &m_AddedActors}) {
-		movableObjects.insert(movableObjects.end(), actors->begin(), actors->end());
+void MovableMan::WriteSyncDigest(std::string& digest) const {
+	uint8_t list = 0;
+	auto writeEntry = [&](const MovableObject* movableObject) {
+		StateHasher hasher;
+		HashMovableObject(hasher, movableObject);
+		hasher.Add(GetSyncText(movableObject));
+		SyncDigestEntry entry{list, movableObject->GetUniqueID(), hasher.GetHash()};
+		digest.append(reinterpret_cast<const char*>(&entry), sizeof(entry));
+	};
+	for (const std::deque<Actor*>* actors: {&m_Actors, &m_AddedActors}) {
+		std::for_each(actors->begin(), actors->end(), writeEntry);
+		++list;
 	}
-	for (std::deque<MovableObject*>* others: {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles}) {
-		movableObjects.insert(movableObjects.end(), others->begin(), others->end());
+	for (const std::deque<MovableObject*>* movableObjects: {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles}) {
+		std::for_each(movableObjects->begin(), movableObjects->end(), writeEntry);
+		++list;
+	}
+}
+
+bool MovableMan::FindSyncDifferences(std::string_view otherDigest, std::vector<bool>& wanted) const {
+	std::string ownDigest;
+	WriteSyncDigest(ownDigest);
+	std::vector<SyncDigestEntry> otherEntries = ReadSyncDigest(otherDigest);
+	std::vector<SyncDigestEntry> ownEntries = ReadSyncDigest(ownDigest);
+
+	std::map<int64_t, uint64_t> ownHashes;
+	std::vector<SyncDigestEntry> ownActors;
+	for (const SyncDigestEntry& entry: ownEntries) {
+		if (entry.list < c_FirstNonActorSyncList) {
+			ownActors.push_back(entry);
+		} else {
+			ownHashes[entry.uniqueID] = entry.hash;
+		}
 	}
 
-	// Setting some MOs and not others would only make for a different mismatch, so this machine first has to have the same MOs in the same order.
-	if (movableObjects.size() != count) {
-		return false;
+	wanted.assign(otherEntries.size(), false);
+	size_t actorIndex = 0;
+	for (size_t i = 0; i < otherEntries.size(); ++i) {
+		const SyncDigestEntry& entry = otherEntries[i];
+		if (entry.list < c_FirstNonActorSyncList) {
+			// shortcut: Actors only get recreated where they are, since the Activity and scripts keep track of them. An Actor that only one machine has needs the whole game rebuilt.
+			if (actorIndex >= ownActors.size() || ownActors[actorIndex].list != entry.list || ownActors[actorIndex].uniqueID != entry.uniqueID) {
+				return false;
+			}
+			wanted[i] = ownActors[actorIndex++].hash != entry.hash;
+		} else {
+			auto ownHash = ownHashes.find(entry.uniqueID);
+			wanted[i] = ownHash == ownHashes.end() || ownHash->second != entry.hash;
+		}
 	}
-	for (uint32_t i = 0; i < count; ++i) {
-		SyncedMOState moState;
-		std::memcpy(&moState, moStates.data() + i * sizeof(SyncedMOState), sizeof(moState));
-		if (movableObjects[i]->GetUniqueID() != moState.uniqueID || (dynamic_cast<Actor*>(movableObjects[i]) != nullptr) != (moState.isActor != 0)) {
+	return actorIndex == ownActors.size();
+}
+
+void MovableMan::WriteSyncObjects(const std::vector<bool>& wanted, std::string& objects) const {
+	uint32_t index = 0;
+	auto writeObject = [&](const MovableObject* movableObject) {
+		if (index < wanted.size() && wanted[index]) {
+			std::string text = GetSyncText(movableObject);
+			uint32_t size = static_cast<uint32_t>(text.size());
+			objects.append(reinterpret_cast<const char*>(&index), sizeof(index));
+			objects.append(reinterpret_cast<const char*>(&size), sizeof(size));
+			objects += text;
+		}
+		++index;
+	};
+	std::for_each(m_Actors.begin(), m_Actors.end(), writeObject);
+	std::for_each(m_AddedActors.begin(), m_AddedActors.end(), writeObject);
+	for (const std::deque<MovableObject*>* movableObjects: {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles}) {
+		std::for_each(movableObjects->begin(), movableObjects->end(), writeObject);
+	}
+}
+
+bool MovableMan::ApplySyncObjects(std::string_view digest, std::string_view objects, int& recreatedCount, int& removedCount) {
+	recreatedCount = 0;
+	removedCount = 0;
+	std::vector<SyncDigestEntry> entries = ReadSyncDigest(digest);
+
+	std::map<uint32_t, std::string> texts;
+	while (!objects.empty()) {
+		uint32_t index = 0;
+		uint32_t size = 0;
+		if (objects.size() < sizeof(index) + sizeof(size)) {
 			return false;
 		}
+		std::memcpy(&index, objects.data(), sizeof(index));
+		std::memcpy(&size, objects.data() + sizeof(index), sizeof(size));
+		objects.remove_prefix(sizeof(index) + sizeof(size));
+		if (objects.size() < size || index >= entries.size()) {
+			return false;
+		}
+		texts[index] = std::string(objects.substr(0, size));
+		objects.remove_prefix(size);
 	}
 
-	for (uint32_t i = 0; i < count; ++i) {
-		SyncedMOState moState;
-		std::memcpy(&moState, moStates.data() + i * sizeof(SyncedMOState), sizeof(moState));
-		MovableObject* movableObject = movableObjects[i];
-		SyncedMOState ownState = GetSyncedMOState(movableObject);
-		if (std::memcmp(&ownState, &moState, sizeof(moState)) == 0) {
+	// Reads an MO from the other machine's copy of it: into the MO that this machine has in its place, which keeps everything that points to it working, or into a new one.
+	auto readObject = [&](const std::string& text, MovableObject* inPlaceOf) -> MovableObject* {
+		if (text.starts_with(c_LooseMOPixelMark)) {
+			SyncedLooseMOPixel loose;
+			if (text.size() != 1 + sizeof(loose)) {
+				return nullptr;
+			}
+			std::memcpy(&loose, text.data() + 1, sizeof(loose));
+			// These are small enough to make anew, and the one that this machine had gets removed with the rest that are left over.
+			MOPixel* pixel = new MOPixel(Color(loose.color), loose.mass, Vector(loose.posX, loose.posY), Vector(loose.velX, loose.velY), new Atom(Vector(), loose.material, nullptr, Color(loose.trailColor), loose.trailLength), loose.lifetime);
+			pixel->SetSharpness(loose.sharpness);
+			pixel->SetTeam(loose.team);
+			pixel->SetToHitMOs(loose.hitsMOs != 0);
+			pixel->SetToGetHitByMOs(loose.getsHitByMOs != 0);
+			FinishSyncedMO(pixel);
+			pixel->SetAge(loose.age);
+			++recreatedCount;
+			return pixel;
+		}
+		Reader reader(std::make_unique<std::istringstream>(text), g_PresetMan.GetFullModulePath(c_UserScriptedSavesModuleName) + "/Sync.ini", true, nullptr, false);
+		std::string className;
+		reader >> className;
+		MovableObject* movableObject = nullptr;
+		if (inPlaceOf && inPlaceOf->GetClassName() == className) {
+			movableObject = inPlaceOf;
+			Actor* actor = dynamic_cast<Actor*>(movableObject);
+			Controller::InputMode inputMode = actor ? actor->GetController()->GetInputMode() : Controller::CIM_DISABLED;
+			int player = actor ? actor->GetController()->GetPlayer() : -1;
+			if (actor) {
+				RemoveActorFromTeamRoster(actor);
+			}
+			movableObject->Destroy();
+			if (static_cast<Entity*>(movableObject)->Create(reader, false) < 0) {
+				return nullptr;
+			}
+			if (actor) {
+				actor->SetControllerMode(inputMode, player);
+				AddActorToTeamRoster(actor);
+			}
+		} else {
+			const Entity::ClassInfo* classInfo = Entity::ClassInfo::GetClass(className);
+			Entity* entity = classInfo && classInfo->IsConcrete() ? classInfo->NewInstance() : nullptr;
+			movableObject = dynamic_cast<MovableObject*>(entity);
+			if (!movableObject || dynamic_cast<Actor*>(movableObject) || entity->Create(reader, false) < 0) {
+				delete entity;
+				return nullptr;
+			}
+		}
+		FinishSyncedMO(movableObject);
+		++recreatedCount;
+		return movableObject;
+	};
+
+	std::vector<Actor*> ownActors(m_Actors.begin(), m_Actors.end());
+	ownActors.insert(ownActors.end(), m_AddedActors.begin(), m_AddedActors.end());
+	std::deque<MovableObject*>* nonActorLists[] = {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles};
+	std::map<int64_t, MovableObject*> ownNonActors;
+	for (std::deque<MovableObject*>* movableObjects: nonActorLists) {
+		for (MovableObject* movableObject: *movableObjects) {
+			ownNonActors[movableObject->GetUniqueID()] = movableObject;
+		}
+		movableObjects->clear();
+	}
+
+	// The lists are put back together in the other machine's order, out of the MOs that this machine already has as they are there, and the ones read from the other machine's copies.
+	bool allThere = true;
+	size_t actorIndex = 0;
+	for (uint32_t i = 0; i < entries.size(); ++i) {
+		const SyncDigestEntry& entry = entries[i];
+		auto text = texts.find(i);
+		if (entry.list < c_FirstNonActorSyncList) {
+			if (actorIndex >= ownActors.size()) {
+				allThere = false;
+			} else if (Actor* actor = ownActors[actorIndex++]; text != texts.end() && readObject(text->second, actor) != actor) {
+				allThere = false;
+			}
 			continue;
 		}
-		++changedCount;
-		movableObject->SetPos(Vector(moState.posX, moState.posY));
-		movableObject->SetVel(Vector(moState.velX, moState.velY));
-		movableObject->SetRotAngle(moState.rotAngle);
-		movableObject->SetAngularVel(moState.angularVel);
-		movableObject->SetHFlipped(moState.hFlipped != 0);
-		if (Actor* actor = dynamic_cast<Actor*>(movableObject)) {
-			if (actor->GetTeam() != moState.team) {
-				actor->SetTeam(moState.team);
+		MovableObject* movableObject = nullptr;
+		if (auto own = ownNonActors.find(entry.uniqueID); own != ownNonActors.end()) {
+			movableObject = own->second;
+			if (text != texts.end()) {
+				movableObject = readObject(text->second, own->second);
 			}
-			actor->SetStatus(static_cast<Actor::Status>(moState.status));
-			actor->SetHealth(moState.health);
+			if (movableObject == own->second) {
+				ownNonActors.erase(own);
+			}
+		} else if (text != texts.end()) {
+			movableObject = readObject(text->second, nullptr);
+		}
+		if (movableObject && entry.list < c_FirstNonActorSyncList + std::size(nonActorLists)) {
+			nonActorLists[entry.list - c_FirstNonActorSyncList]->push_back(movableObject);
+		} else {
+			allThere = false;
 		}
 	}
-	return true;
+
+	// What is left over are MOs that the other machine doesn't have.
+	for (auto& [uniqueID, movableObject]: ownNonActors) {
+		delete movableObject;
+		++removedCount;
+	}
+	m_ValidItems.clear();
+	m_ValidItems.insert(m_Items.begin(), m_Items.end());
+	m_ValidItems.insert(m_AddedItems.begin(), m_AddedItems.end());
+	m_ValidParticles.clear();
+	m_ValidParticles.insert(m_Particles.begin(), m_Particles.end());
+	m_ValidParticles.insert(m_AddedParticles.begin(), m_AddedParticles.end());
+
+	// The MOIDs still lead to parts of MOs that are gone now, and anything hit this update would be looked up through them.
+	UpdateDrawMOIDs();
+	return allThere && actorIndex == ownActors.size();
 }
 
 bool MovableMan::AddMO(MovableObject* movableObjectToAdd) {

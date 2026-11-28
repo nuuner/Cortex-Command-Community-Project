@@ -370,6 +370,9 @@ namespace RTE {
 		/// @return A script state.
 		LuaStateWrapper* GetAndLockFreeScriptState();
 
+		/// Starts handing out the threaded script states from the first one again. Two machines that do this at the same point of the simulation hand them out alike from there on.
+		void RestartScriptStateAssignment() { m_LastAssignedLuaState = 0; }
+
 		/// Clears internal Lua package tables from all user-defined modules. Those must be reloaded with ReloadAllScripts().
 		void ClearUserModuleCache();
 

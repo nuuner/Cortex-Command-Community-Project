@@ -30,6 +30,7 @@ namespace RTE {
 	class Scene : public Entity {
 
 		friend struct EntityLuaBindings;
+		friend class MovableMan; // For SaveSceneObject, which MovableMan writes single MOs out with.
 
 		/// Public member variable, method and friend function declarations
 	public:

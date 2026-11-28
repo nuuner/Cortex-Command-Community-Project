@@ -258,15 +258,29 @@ namespace RTE {
 		/// @param hasher The StateHasher to add the state to.
 		void HashState(StateHasher& hasher) const;
 
-		/// Writes out everything that HashState goes by for each MO, for another machine to set its own MOs to.
-		/// @param state What to add it to the end of.
-		void WriteSyncState(std::string& state) const;
+		/// Writes out what each MO is compared by between machines: its unique ID, and a hash of all that is known about it.
+		/// @param digest What to add it to the end of.
+		void WriteSyncDigest(std::string& digest) const;
 
-		/// Sets the MOs to what another machine wrote with WriteSyncState. Nothing is changed unless this machine has the very same MOs as the other one.
-		/// @param state What the other machine wrote. This is moved past what was read from it.
-		/// @param changedCount How many MOs weren't already as the other machine has them.
-		/// @return Whether this machine had the same MOs, and so now matches the other one in this.
-		bool ApplySyncState(std::string_view& state, int& changedCount);
+		/// Finds the MOs that this machine doesn't have the way another machine does.
+		/// @param otherDigest What the other machine wrote with WriteSyncDigest.
+		/// @param wanted Which of the other machine's MOs this machine needs its copy of, in the order of its digest.
+		/// @return Whether getting those copies is enough to match the other machine.
+		bool FindSyncDifferences(std::string_view otherDigest, std::vector<bool>& wanted) const;
+
+		/// Writes out copies of MOs for another machine to recreate its own from.
+		/// @param wanted Which MOs, in the order of WriteSyncDigest.
+		/// @param objects What to add them to the end of.
+		void WriteSyncObjects(const std::vector<bool>& wanted, std::string& objects) const;
+
+		/// Makes the MOs match a machine's digest: recreates the ones there are copies for, and removes the ones that the digest doesn't have.
+		/// The machine that the copies are from does this as well, since an MO that was recreated from its copy isn't quite the MO that the copy was made from.
+		/// @param digest What that machine wrote with WriteSyncDigest.
+		/// @param objects What that machine wrote with WriteSyncObjects.
+		/// @param recreatedCount How many MOs were recreated.
+		/// @param removedCount How many MOs were removed.
+		/// @return Whether that worked out, and this machine now has the MOs of the digest.
+		bool ApplySyncObjects(std::string_view digest, std::string_view objects, int& recreatedCount, int& removedCount);
 
 		/// Gets the global setting for how much splash MOPixels should be created
 		/// an MO penetrates the terrain deeply.
@@ -651,6 +665,11 @@ namespace RTE {
 
 		// Global map which stores all objects so they could be foud by their unique ID
 		std::map<int64_t, MovableObject*> m_KnownObjects;
+
+		/// Gets all that is known about an MO as text, which it can be recreated from.
+		/// @param movableObject The MO.
+		/// @return The text.
+		std::string GetSyncText(const MovableObject* movableObject) const;
 
 		/// Private member variable and method declarations
 	private:

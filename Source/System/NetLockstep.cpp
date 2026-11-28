@@ -5,6 +5,8 @@
 #include "LuaMan.h"
 #include "MovableMan.h"
 #include "PresetMan.h"
+#include "SceneMan.h"
+#include "SLTerrain.h"
 #include "TimerMan.h"
 
 #include "DeterminismChecker.h"
@@ -13,6 +15,7 @@
 #include "System.h"
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -70,7 +73,11 @@ namespace {
 	constexpr size_t c_MaxBlobSize = 64 * 1024 * 1024; //!< The biggest thing that the other machine is believed about, in bytes.
 	constexpr int c_MaxReloadCount = 10; //!< How many times the machines get rebuilt from the host's game before giving up on keeping them matching.
 	constexpr int c_CorrectionTimeoutS = 60; //!< How long correcting the other machine can take before it is given up on.
-	constexpr char c_PatchBlob = 'P'; //!< What the host's state for the other machine to set its own to starts with.
+	constexpr char c_DigestBlob = 'D'; //!< What the host's digest of its objects, for the other machine to find its differences by, starts with.
+	constexpr char c_ObjectsBlob = 'O'; //!< What the host's copies of the objects that the other machine asked for start with.
+	constexpr int c_TerrainTileSize = 64; //!< How wide and tall the tiles are that the terrain is compared and copied in, in pixels.
+	constexpr long long c_ObjectCorrectionHoldUpdates = 90; //!< How many simulation updates the machines have to keep matching for after objects were recreated, for the next correction to be tried that way too. Sooner than that, what is off isn't something that recreating objects gets at.
+	constexpr size_t c_MaxWantedSize = 800; //!< How long the other machine's answer about which objects it wants can get, in bytes, since it has to fit in a message. It takes a byte for every four objects and terrain tiles there are.
 	constexpr char c_ReloadBlob = 'L'; //!< What the host's game for both machines to rebuild theirs from starts with.
 
 	int s_Epoch = 0; //!< How many times the machines have been rebuilt from the host's game. Messages say which time they are from, so that ones from before can be told apart.
@@ -87,6 +94,10 @@ namespace {
 	std::string s_ReceivedBlob; //!< What has arrived in full and is yet to be used, which has to wait for the simulation update it is for.
 	int s_VerdictBlobID = 0; //!< The number of the host's state that the other machine has said how it went with, or that this machine has to say it about.
 	bool s_Verdict = false; //!< Whether setting this machine's state to the host's got the machines matching.
+	int s_WantedBlobID = 0; //!< The number of the host's digest that the other machine has said which objects it wants for, or that this machine has to say it about.
+	std::string s_Wanted; //!< Which of the host's objects the other machine wants copies of, as hexadecimal digits of four objects each, in the order of the host's digest.
+	std::string s_SyncDigest; //!< The host's digest that this machine is getting the objects for.
+	long long s_LastObjectCorrectionUpdate = -c_ObjectCorrectionHoldUpdates; //!< The simulation update that the other machine last had objects recreated at.
 
 	int s_Socket = -1; //!< The UDP socket that is connected to the other machine.
 	Clock::time_point s_LastHeardFrom; //!< When something last arrived from the other machine.
@@ -151,6 +162,37 @@ namespace {
 		return true;
 	}
 
+	/// Goes through the tiles of the terrain, handing over the rows of each one's material and foreground color pixels.
+	// shortcut: the background color and the unseen layers are left out, since they don't change how the simulation goes. Add them if a difference in them shows.
+	template <typename RowFunction>
+	void ForEachTerrainTile(RowFunction&& onRow) {
+		SLTerrain* terrain = g_SceneMan.GetTerrain();
+		uint32_t tile = 0;
+		for (int tileY = 0; tileY < terrain->GetMaterialBitmap()->h; tileY += c_TerrainTileSize) {
+			for (int tileX = 0; tileX < terrain->GetMaterialBitmap()->w; tileX += c_TerrainTileSize, ++tile) {
+				for (BITMAP* bitmap: {terrain->GetMaterialBitmap(), terrain->GetFGColorBitmap()}) {
+					for (int y = tileY; y < std::min(tileY + c_TerrainTileSize, bitmap->h); ++y) {
+						onRow(tile, bitmap->line[y] + tileX, static_cast<size_t>(std::min(c_TerrainTileSize, bitmap->w - tileX)));
+					}
+				}
+			}
+		}
+	}
+
+	/// Gets a hash of each tile of the terrain.
+	std::vector<uint64_t> GetTerrainTileHashes() {
+		std::vector<StateHasher> hashers;
+		ForEachTerrainTile([&hashers](uint32_t tile, unsigned char* row, size_t size) {
+			hashers.resize(tile + 1);
+			hashers[tile].AddBytes(row, size);
+		});
+		std::vector<uint64_t> hashes;
+		for (const StateHasher& hasher: hashers) {
+			hashes.push_back(hasher.GetHash());
+		}
+		return hashes;
+	}
+
 	/// Gets the hash of the simulation state that the machines compare.
 	uint64_t GetStateHash() {
 		StateHasher hasher;
@@ -163,6 +205,8 @@ namespace {
 	/// Starts all the random number generators that the simulation uses over from a seed. Doing this with the same seed on both machines gets their random numbers matching, whatever they were up to.
 	void SeedSimRandomGenerators(uint64_t seed) {
 		g_RandomGenerator.Seed(seed);
+		// Which script state the next scripted object goes to decides which random numbers its scripts get.
+		g_LuaMan.RestartScriptStateAssignment();
 		g_LuaMan.GetMasterScriptState().SeedRandomGenerators(seed + 1);
 		uint64_t luaStateSeed = seed + 2;
 		for (LuaStateWrapper& luaState: g_LuaMan.GetThreadedScriptStates()) {
@@ -538,6 +582,9 @@ void NetLockstep::SendState(const std::string& extraLines) {
 		// The host waits to hear how setting this machine's state to its own went, and keeps being told in case that gets lost.
 		message += std::format("{} v {}\n", s_VerdictBlobID, static_cast<int>(s_Verdict));
 	}
+	if (s_LocalPlayer != 0 && s_WantedBlobID > 0 && s_WantedBlobID == s_LastBlobID) {
+		message += std::format("{} w x{}\n", s_WantedBlobID, s_Wanted);
+	}
 	SendToPeer(message + extraLines);
 }
 
@@ -610,6 +657,11 @@ void NetLockstep::HandleMessage(const std::string& text) {
 				s_VerdictBlobID = static_cast<int>(simUpdate);
 				s_Verdict = content[2] == '1';
 			}
+		} else if (content.starts_with("w x")) {
+			if (s_LocalPlayer == 0 && simUpdate == s_LastBlobID) {
+				s_WantedBlobID = static_cast<int>(simUpdate);
+				s_Wanted = content.substr(3);
+			}
 		} else if (content == "a") {
 			if (simUpdate > s_RemoteAckedThrough && simUpdate <= s_LocalCompleteThrough) {
 				s_RemoteAckedThrough = simUpdate;
@@ -678,6 +730,7 @@ void NetLockstep::StartEpoch(int epoch) {
 	}
 	ForgetStateHashes();
 
+	s_LastObjectCorrectionUpdate = -c_ObjectCorrectionHoldUpdates;
 	s_LeaveInputUpdateOpen = false;
 	s_LastInputDelayChange = 0;
 	s_LastStallAllowanceChange = 0;
@@ -688,26 +741,9 @@ bool NetLockstep::CorrectOtherMachine() {
 	auto correctionStart = Clock::now();
 	bool matching = false;
 
-	if (!s_ReloadIsForced) {
-		// First the other machine gets to set its state to this machine's, which works out if it still has all the same objects, and is the least that can be done.
-		// The random numbers are started over on both machines rather than passed along, which gets them matching just the same.
-		uint64_t seed = s_LocalRandom();
-		SeedSimRandomGenerators(seed);
-
-		std::string patch(1, c_PatchBlob);
-		AppendValue(patch, s_SimUpdate);
-		AppendValue(patch, seed);
-		std::vector<int64_t> uniqueIDCounters = MovableObject::GetUniqueIDCounters();
-		AppendValue(patch, static_cast<uint32_t>(uniqueIDCounters.size()));
-		for (int64_t uniqueIDCounter: uniqueIDCounters) {
-			AppendValue(patch, uniqueIDCounter);
-		}
-		AppendValue(patch, GetStateHash());
-		g_MovableMan.WriteSyncState(patch);
-		if (!SendBlob(patch)) {
-			return false;
-		}
-		while (s_VerdictBlobID != s_LastBlobID) {
+	// The other machine answers each thing it is sent, with which objects it wants or with how it went.
+	auto waitForAnswer = [&correctionStart]() {
+		while (s_WantedBlobID != s_LastBlobID && s_VerdictBlobID != s_LastBlobID) {
 			if (s_PeerIsGone || Clock::now() - correctionStart > std::chrono::seconds(c_CorrectionTimeoutS)) {
 				return false;
 			}
@@ -715,7 +751,74 @@ bool NetLockstep::CorrectOtherMachine() {
 			poll(&pollInfo, 1, 2);
 			Receive();
 		}
-		matching = s_Verdict;
+		return true;
+	};
+
+	if (!s_ReloadIsForced && s_SimUpdate - s_LastObjectCorrectionUpdate >= c_ObjectCorrectionHoldUpdates) {
+		s_LastObjectCorrectionUpdate = s_SimUpdate;
+		// First the other machine gets to find out which of its objects aren't as this machine has them, and to recreate just those from this machine's copies of them.
+		std::string digest;
+		g_MovableMan.WriteSyncDigest(digest);
+		std::string digestBlob(1, c_DigestBlob);
+		AppendValue(digestBlob, s_SimUpdate);
+		AppendValue(digestBlob, static_cast<uint32_t>(digest.size()));
+		digestBlob += digest;
+		std::vector<uint64_t> tileHashes = GetTerrainTileHashes();
+		for (uint64_t tileHash: tileHashes) {
+			AppendValue(digestBlob, tileHash);
+		}
+		if (!SendBlob(digestBlob) || !waitForAnswer()) {
+			return false;
+		}
+		if (s_WantedBlobID == s_LastBlobID) {
+			std::vector<bool> wanted;
+			for (char digit: s_Wanted) {
+				int bits = std::isxdigit(static_cast<unsigned char>(digit)) ? std::stoi(std::string(1, digit), nullptr, 16) : 0;
+				for (int bit = 0; bit < 4; ++bit) {
+					wanted.push_back((bits >> bit) & 1);
+				}
+			}
+			std::string objects;
+			g_MovableMan.WriteSyncObjects(wanted, objects);
+			// The terrain tiles come after the objects in what the other machine wants. Those are the same bytes on both ends, so this machine's own stay as they are.
+			size_t firstTile = wanted.size() >= tileHashes.size() ? wanted.size() - tileHashes.size() : 0;
+			wanted.resize(firstTile + tileHashes.size(), false);
+			std::string tiles;
+			uint32_t lastTile = UINT32_MAX;
+			ForEachTerrainTile([&](uint32_t tile, unsigned char* row, size_t size) {
+				if (wanted[firstTile + tile]) {
+					if (tile != lastTile) {
+						AppendValue(tiles, tile);
+						lastTile = tile;
+					}
+					tiles.append(reinterpret_cast<const char*>(row), size);
+				}
+			});
+
+			// This machine recreates those objects from its copies too, since an object recreated from a copy isn't quite the one that the copy was made of.
+			// The random numbers are started over on both machines rather than passed along, which gets them matching just the same.
+			std::vector<int64_t> uniqueIDCounters = MovableObject::GetUniqueIDCounters();
+			uint64_t seed = s_LocalRandom();
+			int recreatedCount = 0;
+			int removedCount = 0;
+			// Creating objects takes random numbers, so those have to match before rather than after.
+			SeedSimRandomGenerators(seed);
+			if (g_MovableMan.ApplySyncObjects(digest, objects, recreatedCount, removedCount)) {
+				std::string objectsBlob(1, c_ObjectsBlob);
+				AppendValue(objectsBlob, s_SimUpdate);
+				AppendValue(objectsBlob, seed);
+				AppendValue(objectsBlob, static_cast<uint32_t>(uniqueIDCounters.size()));
+				for (int64_t uniqueIDCounter: uniqueIDCounters) {
+					AppendValue(objectsBlob, uniqueIDCounter);
+				}
+				AppendValue(objectsBlob, GetStateHash());
+				AppendValue(objectsBlob, static_cast<uint32_t>(objects.size()));
+				if (!SendBlob(objectsBlob + objects + tiles) || !waitForAnswer()) {
+					return false;
+				}
+				matching = s_VerdictBlobID == s_LastBlobID && s_Verdict;
+			}
+		}
 	}
 
 	if (matching) {
@@ -725,7 +828,7 @@ bool NetLockstep::CorrectOtherMachine() {
 		ForgetStateHashes();
 		// The traces of the two machines can't match up to here, so this marks where they are to match from again.
 		DeterminismCheck("Lockstep correction", s_LastBlobID);
-		std::cerr << std::format("Lockstep: set the other player's state to this one's at update {}, in {:.0f} ms.", s_SimUpdate, std::chrono::duration<double, std::milli>(Clock::now() - correctionStart).count()) << std::endl;
+		std::cerr << std::format("Lockstep: recreated the objects that the other player had differently at update {}, in {:.0f} ms.", s_SimUpdate, std::chrono::duration<double, std::milli>(Clock::now() - correctionStart).count()) << std::endl;
 		return true;
 	}
 
@@ -778,20 +881,74 @@ bool NetLockstep::UseReceivedBlob() {
 		return true;
 	}
 
+	if (kind == c_DigestBlob) {
+		// The host is told which of its objects this machine doesn't have the way it does, or that there is no matching it by recreating objects.
+		uint32_t digestSize = 0;
+		bool readable = TakeValue(blob, digestSize) && digestSize <= blob.size();
+		s_SyncDigest = readable ? std::string(blob.substr(0, digestSize)) : "";
+		std::vector<bool> wanted;
+		readable = readable && g_MovableMan.FindSyncDifferences(s_SyncDigest, wanted);
+		if (readable) {
+			blob.remove_prefix(digestSize);
+			for (uint64_t ownTileHash: GetTerrainTileHashes()) {
+				uint64_t hostTileHash = 0;
+				readable = readable && TakeValue(blob, hostTileHash);
+				wanted.push_back(hostTileHash != ownTileHash);
+			}
+		}
+		s_ReceivedBlob.clear();
+		if (readable && wanted.size() <= c_MaxWantedSize * 4) {
+			s_Wanted.clear();
+			for (size_t i = 0; i < wanted.size(); i += 4) {
+				int bits = 0;
+				for (size_t bit = 0; bit < 4 && i + bit < wanted.size(); ++bit) {
+					bits |= static_cast<int>(wanted[i + bit]) << bit;
+				}
+				s_Wanted += "0123456789abcdef"[bits];
+			}
+			s_WantedBlobID = s_LastBlobID;
+		} else {
+			std::cerr << "Lockstep: this game is too far from the host's at update " << s_SimUpdate << " to be matched by recreating objects." << std::endl;
+			s_VerdictBlobID = s_LastBlobID;
+			s_Verdict = false;
+		}
+		return false;
+	}
+
 	bool matching = false;
-	int changedCount = 0;
+	int recreatedCount = 0;
+	int removedCount = 0;
+	int tileCount = 0;
+	uint32_t objectsSize = 0;
 	uint64_t seed = 0;
 	uint32_t uniqueIDCounterCount = 0;
 	std::vector<int64_t> uniqueIDCounters;
 	uint64_t hostStateHash = 0;
-	bool readable = kind == c_PatchBlob && TakeValue(blob, seed) && TakeValue(blob, uniqueIDCounterCount) && uniqueIDCounterCount <= 1024;
+	bool readable = kind == c_ObjectsBlob && TakeValue(blob, seed) && TakeValue(blob, uniqueIDCounterCount) && uniqueIDCounterCount <= 1024;
 	for (uint32_t i = 0; readable && i < uniqueIDCounterCount; ++i) {
 		readable = TakeValue(blob, uniqueIDCounters.emplace_back());
 	}
-	if (readable && TakeValue(blob, hostStateHash) && g_MovableMan.ApplySyncState(blob, changedCount)) {
+	if (readable && TakeValue(blob, hostStateHash) && TakeValue(blob, objectsSize) && objectsSize <= blob.size()) {
+		// The objects that get recreated get new unique IDs, which have to come out the same as they did on the host.
 		MovableObject::SetUniqueIDCounters(uniqueIDCounters);
 		SeedSimRandomGenerators(seed);
-		matching = GetStateHash() == hostStateHash;
+		matching = g_MovableMan.ApplySyncObjects(s_SyncDigest, blob.substr(0, objectsSize), recreatedCount, removedCount) && GetStateHash() == hostStateHash;
+		// What is left are the terrain tiles that this machine asked for, each as its number and then its pixels.
+		blob.remove_prefix(objectsSize);
+		uint32_t hostTile = 0;
+		bool moreTiles = TakeValue(blob, hostTile);
+		ForEachTerrainTile([&](uint32_t tile, unsigned char* row, size_t size) {
+			while (moreTiles && hostTile < tile) {
+				// That was all of that tile, so the number of the next one follows.
+				++tileCount;
+				moreTiles = TakeValue(blob, hostTile);
+			}
+			if (moreTiles && tile == hostTile && blob.size() >= size) {
+				std::memcpy(row, blob.data(), size);
+				blob.remove_prefix(size);
+			}
+		});
+		tileCount += moreTiles;
 	}
 	s_ReceivedBlob.clear();
 	s_VerdictBlobID = s_LastBlobID;
@@ -801,7 +958,9 @@ bool NetLockstep::UseReceivedBlob() {
 		s_CorrectionIsWanted = false;
 		ForgetStateHashes();
 		DeterminismCheck("Lockstep correction", s_LastBlobID);
-		std::cerr << "Lockstep: set this game's state to the host's at update " << s_SimUpdate << ", which moved " << changedCount << " objects." << std::endl;
+		std::cerr << std::format("Lockstep: recreated {} objects from the host's, removed {} and copied {} terrain tiles at update {}.", recreatedCount, removedCount, tileCount, s_SimUpdate) << std::endl;
+	} else {
+		std::cerr << std::format("Lockstep: recreating {} objects from the host's and removing {} at update {} didn't get the games matching.", recreatedCount, removedCount, s_SimUpdate) << std::endl;
 	}
 	return false;
 }
