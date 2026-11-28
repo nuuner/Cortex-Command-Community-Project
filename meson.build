@@ -239,9 +239,9 @@ if host_machine.system() == 'darwin'
   sdl3_dep = dependency('sdl3')
 else
   if host_machine.system() == 'linux'
-    # SDL's build leaves out whatever it finds no headers for, without failing. Without XInput2 it gets no relative mouse motion, so the game builds and runs but the mouse can't aim.
+    # SDL's build leaves out whatever it finds no headers for, without failing. Without XInput2 it gets no relative mouse motion on X11, so the game builds and runs but the mouse can't aim.
     if not dependency('xi', method: 'pkg-config', required: false).found()
-      error('The XInput2 development files are missing (libxi-dev on Ubuntu). The bundled SDL would be built without relative mouse motion, see "Installing Dependencies" in the README.')
+      error('The XInput2 development files are missing (libxi-dev on Ubuntu). The bundled SDL would be built without relative mouse motion on X11, see "Installing Dependencies" in the README. After installing them, wipe a build directory that already exists (meson setup --wipe), since SDL remembers what it did not find.')
     endif
   endif
   sdl3_proj = cmake.subproject('SDL3-3.2.10', options: sdl3_opt)

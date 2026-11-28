@@ -122,7 +122,7 @@ If you want to change the buildtype afterwards, you can use `meson configure --b
 
 **Ubuntu >=22.04:**  
 `sudo apt-get install build-essential libflac++-dev liblua5.1-dev libminizip-dev liblz4-dev libpng++-dev libtbb-dev ninja-build python3-pip`  
-`sudo apt-get install libx11-dev libxext-dev libxi-dev libxfixes-dev libxcursor-dev libxrandr-dev libxss-dev libwayland-dev libxkbcommon-dev libdecor-0-dev wayland-protocols libegl1-mesa-dev` (for the bundled SDL: it is built without whichever of these are missing, and without `libxi-dev` the mouse can't aim in game)  
+`sudo apt-get install libx11-dev libxext-dev libxi-dev libxfixes-dev libxcursor-dev libxrandr-dev libxss-dev libwayland-dev libxkbcommon-dev libdecor-0-dev wayland-protocols libegl1-mesa-dev` (for the bundled SDL: it is built without whichever of these are missing, and without `libxi-dev` the mouse can't aim in game on X11. If you install any of them after you have already built, run `meson setup --wipe build`, since SDL remembers what it did not find)  
 `sudo python3 -m pip install meson`
 
 **Fedora:**  
