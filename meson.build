@@ -232,6 +232,20 @@ external_objects = []
 external_libs = []
 subdir('external')
 
+# One and the same implementation of sine, cosine and the like on every platform, in place of the system's. See PortableMath.c.
+# shortcut: not for MSVC, whose runtime doesn't take being overridden this way. Lockstep doesn't build there yet either.
+if compiler.get_argument_syntax() == 'gcc'
+  portable_math_sources = []
+  # All but the first are SDL's copies of uClibc's routines, as they are in SDL 3.2.10.
+  foreach name : ['PortableMath', 'e_atan2', 'e_exp', 'e_log', 'e_log10', 'e_pow', 'e_rem_pio2', 'e_sqrt', 'k_cos', 'k_rem_pio2', 'k_sin', 'k_tan', 's_atan', 's_copysign', 's_cos', 's_fabs', 's_floor', 's_scalbn', 's_sin', 's_tan']
+    portable_math_sources += files('Source/System/PortableMath'/name + '.c')
+  endforeach
+  portable_math = static_library('portable_math', portable_math_sources,
+    c_args: ['-ffp-contract=off', '-fno-fast-math', '-fno-builtin', '-w'] + (host_machine.cpu_family() in ['x86', 'x86_64'] ? ['-msse2'] : []))
+  # As objects rather than a library, so that all of it ends up in the game whether or not the game's own code uses it. Lua has to get these too.
+  external_objects += portable_math.extract_all_objects(recursive: false)
+endif
+
 sdl3_opt = cmake.subproject_options()
 sdl3_opt.add_cmake_defines({'CMAKE_POSITION_INDEPENDENT_CODE': get_option('b_staticpic'), 'BUILD_SHARED_LIBS':false, 'BUILD_STATIC_LIBS': true})
 sdl3_opt.append_compile_args('c','-DUSE_XINPUT2_KEYBOARD')
