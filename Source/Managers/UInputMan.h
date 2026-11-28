@@ -70,6 +70,13 @@ namespace RTE {
 		/// @param inputEvent The SDL input event to handle.
 		void HandleLocalInputEvent(const SDL_Event& inputEvent);
 
+		/// Puts made up gamepads in place of the real ones, for players whose input comes from another machine or goes to one. The real ones are set aside until GiveBackGamepads.
+		/// @param joystickIDs The ID of the gamepad in each slot, with 0 for none. A player whose control scheme is for gamepad 1 goes by the first slot, and so on.
+		void TakeOverGamepads(const std::array<SDL_JoystickID, Players::MaxPlayerCount>& joystickIDs);
+
+		/// Puts the real gamepads back in place after TakeOverGamepads.
+		void GiveBackGamepads();
+
 		/// Updates the state of this UInputMan. Supposed to be done every frame.
 		/// @return An error return value signaling success or any particular failure. Anything below 0 is an error signal.
 		int Update();
@@ -510,6 +517,7 @@ namespace RTE {
 
 		static std::vector<Gamepad> s_PrevJoystickStates; //!< Joystick states as they were the previous update.
 		static std::vector<Gamepad> s_ChangedJoystickStates; //!< Joystick states that have changed.
+		std::vector<Gamepad> m_OwnJoystickStates; //!< The real gamepads, while made up ones are in their place. Empty otherwise.
 
 		std::vector<SDL_Event> m_EventQueue; //!< List of incoming input events.
 

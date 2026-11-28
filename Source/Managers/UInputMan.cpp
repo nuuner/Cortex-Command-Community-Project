@@ -881,6 +881,38 @@ bool UInputMan::GetJoystickDirectionState(int whichJoy, int whichAxis, int which
 	return false;
 }
 
+/// Gets whether a joystick is a gamepad, which the made up ones of players in lockstep always are. SDL doesn't know of those.
+static bool IsGamepad(SDL_JoystickID joystickID) {
+	return (NetLockstep::IsActive() && joystickID >= static_cast<SDL_JoystickID>(NetLockstep::GetPlayerDeviceID(0))) || SDL_IsGamepad(joystickID);
+}
+
+void UInputMan::TakeOverGamepads(const std::array<SDL_JoystickID, Players::MaxPlayerCount>& joystickIDs) {
+	if (m_OwnJoystickStates.empty()) {
+		m_OwnJoystickStates = s_PrevJoystickStates;
+	}
+	for (size_t slot = 0; slot < joystickIDs.size() && slot < s_PrevJoystickStates.size(); ++slot) {
+		SDL_JoystickID joystickID = joystickIDs[slot] != 0 ? joystickIDs[slot] : -1;
+		s_PrevJoystickStates[slot] = Gamepad(static_cast<int>(slot), joystickID, SDL_GAMEPAD_AXIS_COUNT, SDL_GAMEPAD_BUTTON_COUNT);
+		s_ChangedJoystickStates[slot] = Gamepad(static_cast<int>(slot), joystickID, SDL_GAMEPAD_AXIS_COUNT, SDL_GAMEPAD_BUTTON_COUNT);
+	}
+}
+
+void UInputMan::GiveBackGamepads() {
+	if (m_OwnJoystickStates.empty()) {
+		return;
+	}
+	// shortcut: a gamepad that was plugged in or pulled out in the meantime is missed, until it is plugged in again.
+	for (size_t slot = 0; slot < m_OwnJoystickStates.size(); ++slot) {
+		Gamepad& own = m_OwnJoystickStates[slot];
+		std::fill(own.m_Axis.begin(), own.m_Axis.end(), 0);
+		std::fill(own.m_DigitalAxis.begin(), own.m_DigitalAxis.end(), 0);
+		std::fill(own.m_Buttons.begin(), own.m_Buttons.end(), false);
+		s_PrevJoystickStates[slot] = own;
+		s_ChangedJoystickStates[slot] = own;
+	}
+	m_OwnJoystickStates.clear();
+}
+
 void UInputMan::HandleLocalInputEvent(const SDL_Event& inputEvent) {
 	SDL_Event event = inputEvent;
 	// Input that gets recorded, or sent to another machine in lockstep, has to mean the same on a machine whose window is scaled up differently and whose mouse sensitivity is set differently. So both are worked into the mouse movement here, and left alone after.
@@ -1020,9 +1052,9 @@ void UInputMan::HandleInputEvent(const SDL_Event& inputEvent) {
 		case SDL_EVENT_GAMEPAD_AXIS_MOTION:
 		case SDL_EVENT_JOYSTICK_AXIS_MOTION:
 			if (std::vector<Gamepad>::iterator device = std::find(s_PrevJoystickStates.begin(), s_PrevJoystickStates.end(), inputEvent.type == SDL_EVENT_GAMEPAD_AXIS_MOTION ? inputEvent.gaxis.which : inputEvent.jaxis.which); device != s_PrevJoystickStates.end()) {
-				if (SDL_IsGamepad(device->m_JoystickID) && inputEvent.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+				if (IsGamepad(device->m_JoystickID) && inputEvent.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
 					UpdateJoystickAxis(device, inputEvent.gaxis.axis, inputEvent.gaxis.value);
-				} else if (!SDL_IsGamepad(device->m_JoystickID)) {
+				} else if (!IsGamepad(device->m_JoystickID)) {
 					UpdateJoystickAxis(device, inputEvent.jaxis.axis, inputEvent.jaxis.value);
 				}
 			}
@@ -1035,7 +1067,7 @@ void UInputMan::HandleInputEvent(const SDL_Event& inputEvent) {
 			if (std::vector<Gamepad>::iterator device = std::find(s_PrevJoystickStates.begin(), s_PrevJoystickStates.end(), joystickEvent ? inputEvent.jbutton.which : inputEvent.gbutton.which); device != s_PrevJoystickStates.end()) {
 				int button = -1;
 				int down = false;
-				if (SDL_IsGamepad(device->m_JoystickID)) {
+				if (IsGamepad(device->m_JoystickID)) {
 					if (inputEvent.type == SDL_EVENT_GAMEPAD_BUTTON_UP || inputEvent.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
 						button = inputEvent.gbutton.button;
 						down = inputEvent.gbutton.down;

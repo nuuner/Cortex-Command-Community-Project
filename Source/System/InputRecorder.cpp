@@ -60,6 +60,11 @@ std::string InputRecorder::EventToLine(const SDL_Event& inputEvent) {
 			return std::format("w {} {}", inputEvent.wheel.which, inputEvent.wheel.direction == SDL_MOUSEWHEEL_NORMAL ? inputEvent.wheel.y : -inputEvent.wheel.y);
 		case SDL_EVENT_TEXT_INPUT:
 			return std::format("t {}", inputEvent.text.text);
+		case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+			return std::format("j a {} {} {}", inputEvent.gaxis.which, static_cast<int>(inputEvent.gaxis.axis), static_cast<int>(inputEvent.gaxis.value));
+		case SDL_EVENT_GAMEPAD_BUTTON_UP:
+		case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+			return std::format("j b {} {} {}", inputEvent.gbutton.which, static_cast<int>(inputEvent.gbutton.button), static_cast<int>(inputEvent.gbutton.down));
 		default:
 			return "";
 	}
@@ -171,6 +176,28 @@ void InputRecorder::ApplyLine(const std::string& line) {
 			// The text is everything after the kind and the space that follows it, and this line outlives the handling of the event.
 			inputEvent.text.text = line.c_str() + std::min<size_t>(2, line.size());
 			break;
+		case 'j': {
+			// A gamepad's stick or trigger moving, or one of its buttons going down or up.
+			char part = 0;
+			SDL_JoystickID which = 0;
+			int index = 0;
+			int value = 0;
+			values >> part >> which >> index >> value;
+			if (part == 'a' && index >= 0 && index < SDL_GAMEPAD_AXIS_COUNT) {
+				inputEvent.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
+				inputEvent.gaxis.which = which;
+				inputEvent.gaxis.axis = static_cast<Uint8>(index);
+				inputEvent.gaxis.value = static_cast<Sint16>(std::clamp(value, -32768, 32767));
+			} else if (part == 'b' && index >= 0 && index < SDL_GAMEPAD_BUTTON_COUNT) {
+				inputEvent.type = value ? SDL_EVENT_GAMEPAD_BUTTON_DOWN : SDL_EVENT_GAMEPAD_BUTTON_UP;
+				inputEvent.gbutton.which = which;
+				inputEvent.gbutton.button = static_cast<Uint8>(index);
+				inputEvent.gbutton.down = value != 0;
+			} else {
+				return;
+			}
+			break;
+		}
 		case 'f':
 			values >> down;
 			ApplyFocusChange(down);

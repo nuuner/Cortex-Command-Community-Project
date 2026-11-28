@@ -66,8 +66,9 @@ namespace {
 	constexpr long long c_PingInterval = 30; //!< How many simulation updates there are between measurements of how long the connection takes.
 	constexpr size_t c_PingSampleCount = 10; //!< How many of the latest measurements the input delay goes by. It goes by the worst of them.
 	constexpr long long c_ShrinkInterval = 60; //!< The fewest simulation updates there can be between changes of the input delay when it is shrinking.
-	constexpr long long c_StallAllowanceDuration = 600; //!< How many simulation updates each extra update of input delay that the other machine asked for is kept for.
-	constexpr long long c_MaxStallAllowance = 6; //!< The most simulation updates of input delay that the other machine can ask to have added.
+	constexpr long long c_StallAllowanceDuration = 300; //!< How many simulation updates each extra update of input delay that the other machine asked for is kept for.
+	constexpr long long c_RepeatedStallWindow = 120; //!< How many simulation updates apart two waits of the other machine can be for the input delay to get longer over them.
+	constexpr long long c_MaxStallAllowance = 3; //!< The most simulation updates of input delay that the other machine can ask to have added.
 	constexpr long long c_MaxUpdatesAhead = 120; //!< How many simulation updates ahead of this machine the other one is believed about.
 	constexpr int c_ResendIntervalMS = 20; //!< How long to wait for the other machine's input before repeating what this machine last sent, in case that got lost.
 	constexpr int c_WaitTimeoutS = 120; //!< How long to wait for the other machine's first input before giving up on it. It has to cover the other machine loading the game.
@@ -109,6 +110,7 @@ namespace {
 	bool s_StartedFromMenus = false; //!< Whether the game was set up in the menus, which it then goes back to when it is over, rather than the program quitting.
 	bool s_LeaveIsWanted = false; //!< Whether this machine's player asked to leave the game.
 	InputScheme s_OwnControlSchemes[c_PlayerCount]; //!< The control schemes that the players of this machine had before the game took them over.
+	std::string s_ControlSchemeTexts[c_PlayerCount]; //!< The control scheme that each player's machine asked for, as text. Empty for mouse and keyboard.
 	bool s_ControlSchemesAreTakenOver = false; //!< Whether the control schemes are the game's, and the players' own are to be put back.
 	Clock::time_point s_LastHeardFrom; //!< When something last arrived from the other machine.
 	bool s_PeerIsGone = false; //!< Whether the other machine has disconnected.
@@ -131,6 +133,7 @@ namespace {
 	long long s_LastInputDelayChange = 0; //!< The simulation update that the input delay last changed in.
 	long long s_StallAllowance = 0; //!< How many simulation updates of input delay are added because the other machine had to wait for this one's input.
 	long long s_LastStallAllowanceChange = 0; //!< The simulation update that the stall allowance last changed in.
+	long long s_LastStallNoticeReceived = -1000; //!< The simulation update that the other machine last said it had to wait in.
 	long long s_LastStallNotice = 0; //!< The simulation update that this machine last told the other one that it had to wait in.
 	std::deque<double> s_PingSamplesMS; //!< The latest measurements of how long a message takes to get to the other machine and back, in milliseconds.
 
@@ -367,6 +370,14 @@ bool NetLockstep::CaptureLocalInput(const SDL_Event& inputEvent) {
 		case SDL_EVENT_MOUSE_WHEEL:
 			playerEvent.wheel.which = deviceID;
 			break;
+		// shortcut: every gamepad of this machine counts as its player's, and joysticks that SDL doesn't know as gamepads are left out.
+		case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+			playerEvent.gaxis.which = deviceID;
+			break;
+		case SDL_EVENT_GAMEPAD_BUTTON_UP:
+		case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+			playerEvent.gbutton.which = deviceID;
+			break;
 		default:
 			// Anything else would only reach this machine's simulation, so it is dropped.
 			return true;
@@ -481,8 +492,8 @@ void NetLockstep::BeginSimUpdate() {
 			return;
 		}
 	}
-	// A wait of less than half an update is just this machine keeping in step with the other one, and doesn't hold anything up.
-	if (double waitedMS = std::chrono::duration<double, std::milli>(Clock::now() - waitStart).count(); waitedMS > g_TimerMan.GetDeltaTimeMS() * 0.5) {
+	// A wait of less than an update is just this machine keeping in step with the other one, and doesn't show.
+	if (double waitedMS = std::chrono::duration<double, std::milli>(Clock::now() - waitStart).count(); waitedMS > g_TimerMan.GetDeltaTimeMS()) {
 		++s_StalledUpdateCount;
 		s_StalledMS += waitedMS;
 		// The other machine's input is getting here too late, so ask it to hold its input back for longer. The start is left out, since the machines are still falling into step then.
@@ -566,7 +577,9 @@ void NetLockstep::Stop() {
 	if (s_ControlSchemesAreTakenOver) {
 		for (int player = 0; player < c_PlayerCount; ++player) {
 			g_UInputMan.GetControlScheme(player)->Create(s_OwnControlSchemes[player]);
+			s_ControlSchemeTexts[player].clear();
 		}
+		g_UInputMan.GiveBackGamepads();
 		s_ControlSchemesAreTakenOver = false;
 	}
 }
@@ -584,18 +597,45 @@ void NetLockstep::EndGame(const std::string& reason) {
 	g_ActivityMan.PauseActivity(true, true);
 }
 
+std::string NetLockstep::GetOwnControlSchemeText() {
+	auto stream = std::make_unique<std::ostringstream>();
+	std::ostringstream* text = stream.get();
+	Writer writer(std::move(stream));
+	writer << (s_ControlSchemesAreTakenOver ? s_OwnControlSchemes[0] : *g_UInputMan.GetControlScheme(0));
+	return text->str();
+}
+
+void NetLockstep::SetPlayerControlSchemeTexts(const std::string& hostScheme, const std::string& joinerScheme) {
+	s_ControlSchemeTexts[0] = hostScheme;
+	s_ControlSchemeTexts[1] = joinerScheme;
+}
+
 void NetLockstep::SetUpControlSchemes() {
+	std::array<SDL_JoystickID, Players::MaxPlayerCount> gamepadIDs{};
 	for (int player = 0; player < c_PlayerCount; ++player) {
 		InputScheme* controlScheme = g_UInputMan.GetControlScheme(player);
 		if (!s_ControlSchemesAreTakenOver) {
 			s_OwnControlSchemes[player].Create(*controlScheme);
 		}
-		controlScheme->SetDevice(InputDevice::DEVICE_MOUSE_KEYB);
-		controlScheme->SetPreset(InputScheme::InputPreset::PresetMouseWASDKeys);
+		if (s_ControlSchemeTexts[player].empty()) {
+			controlScheme->SetDevice(InputDevice::DEVICE_MOUSE_KEYB);
+			controlScheme->SetPreset(InputScheme::InputPreset::PresetMouseWASDKeys);
+		} else {
+			// Both machines read the same text, so the player's controls work the same on both, whatever each has in its own settings.
+			Reader reader(std::make_unique<std::istringstream>(s_ControlSchemeTexts[player]), "the other machine's control scheme", true, nullptr, false);
+			controlScheme->Reset();
+			reader >> *controlScheme;
+		}
+		// Whichever device it is for, the player's input arrives on a made up one, which is the same on both machines.
+		if (controlScheme->GetDevice() >= InputDevice::DEVICE_GAMEPAD_1) {
+			controlScheme->SetDevice(static_cast<InputDevice>(InputDevice::DEVICE_GAMEPAD_1 + player));
+			gamepadIDs[player] = static_cast<SDL_JoystickID>(GetPlayerDeviceID(player));
+		}
 		DeviceID deviceID;
 		deviceID.mouseKeyboard = {GetPlayerDeviceID(player), GetPlayerDeviceID(player)};
 		controlScheme->SetDeviceID(deviceID);
 	}
+	g_UInputMan.TakeOverGamepads(gamepadIDs);
 	s_ControlSchemesAreTakenOver = true;
 }
 
@@ -627,6 +667,7 @@ void NetLockstep::PrepareGameStart() {
 		s_ReceivedBlob.clear();
 		s_PingSamplesMS.clear();
 		s_StallAllowance = 0;
+		s_LastStallNoticeReceived = -1000;
 		s_MatchedHashCount = 0;
 		if (!s_InputDelayIsFixed) {
 			s_InputDelay = 3;
@@ -795,11 +836,13 @@ void NetLockstep::HandleMessage(const std::string& text) {
 				}
 			}
 		} else if (content == "g") {
-			if (!s_InputDelayIsFixed && s_StallAllowance < c_MaxStallAllowance) {
+			// A wait every now and then is better than holding all input back for longer to avoid it, so the delay only grows when the waits keep coming.
+			if (!s_InputDelayIsFixed && s_StallAllowance < c_MaxStallAllowance && s_SimUpdate - s_LastStallNoticeReceived <= c_RepeatedStallWindow) {
 				++s_StallAllowance;
 				s_LastStallAllowanceChange = s_SimUpdate;
 			}
-		} else if (updateIsNear && std::string_view("kmbw").find(content[0]) != std::string_view::npos && messageInput.size() < 200 && messageInput[simUpdate].size() < 1000) {
+			s_LastStallNoticeReceived = s_SimUpdate;
+		} else if (updateIsNear && std::string_view("kmbwj").find(content[0]) != std::string_view::npos && messageInput.size() < 200 && messageInput[simUpdate].size() < 1000) {
 			messageInput[simUpdate].emplace_back(std::move(content));
 		}
 	}

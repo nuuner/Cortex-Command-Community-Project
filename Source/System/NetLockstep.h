@@ -65,7 +65,16 @@ namespace RTE {
 		/// @return The player.
 		static int GetLocalPlayer() { return s_LocalPlayer; }
 
-		/// Gets the ID of the made up mouse and keyboard that a player's input arrives on. It is the same on both machines.
+		/// Gets this machine's own control scheme as text, for the other machine to give this machine's player the same one. It is the one that player 1 has in the settings.
+		/// @return The control scheme.
+		static std::string GetOwnControlSchemeText();
+
+		/// Sets the control schemes that the players of the next game play with, as each of their machines gave it with GetOwnControlSchemeText. Without this they all get mouse and keyboard.
+		/// @param hostScheme The control scheme of the host's player.
+		/// @param joinerScheme The control scheme of the other player.
+		static void SetPlayerControlSchemeTexts(const std::string& hostScheme, const std::string& joinerScheme);
+
+		/// Gets the ID of the made up mouse, keyboard and gamepad that a player's input arrives on. It is the same on both machines.
 		/// @param player The player.
 		/// @return The device ID.
 		static Uint32 GetPlayerDeviceID(int player) { return c_VirtualDeviceBase + player; }

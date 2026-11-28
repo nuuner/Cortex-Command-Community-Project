@@ -72,6 +72,20 @@ namespace {
 		return lines;
 	}
 
+	constexpr char c_ControlSchemeMark = '\x1e'; //!< What comes before the sender's control scheme at the end of a message, which no text has in it.
+	std::string s_PeerControlScheme; //!< The control scheme that the other machine's player plays with, as text.
+
+	/// Takes the sender's control scheme off the end of a message, and returns it.
+	std::string TakeControlScheme(std::string& message) {
+		size_t mark = message.find(c_ControlSchemeMark);
+		if (mark == std::string::npos) {
+			return "";
+		}
+		std::string controlScheme = message.substr(mark + 1);
+		message.erase(mark);
+		return controlScheme;
+	}
+
 	/// Sends an announcement to every network that this machine is on, and to this machine itself, for trying things out with two games on one machine.
 	void Announce(const std::string& text) {
 		sockaddr_in address{};
@@ -234,7 +248,7 @@ void NetLobby::StartGame(const Setup& setup) {
 
 void NetLobby::Update() {
 	auto now = Clock::now();
-	char buffer[2048];
+	char buffer[16384];
 
 	if (s_State == State::Browsing) {
 		sockaddr_in sender{};
@@ -275,7 +289,9 @@ void NetLobby::Update() {
 		sockaddr_in sender{};
 		socklen_t senderSize = sizeof(sender);
 		for (ssize_t received; (received = recvfrom(s_GameSocket, buffer, sizeof(buffer), MSG_DONTWAIT, reinterpret_cast<sockaddr*>(&sender), &senderSize)) > 0; senderSize = sizeof(sender)) {
-			std::vector<std::string> lines = SplitLines(std::string(buffer, static_cast<size_t>(received)));
+			std::string message(buffer, static_cast<size_t>(received));
+			std::string controlScheme = TakeControlScheme(message);
+			std::vector<std::string> lines = SplitLines(message);
 			bool fromPeer = s_HasPeer && sender.sin_addr.s_addr == s_PeerAddress.sin_addr.s_addr && sender.sin_port == s_PeerAddress.sin_port;
 			if (lines.empty()) {
 				continue;
@@ -285,6 +301,7 @@ void NetLobby::Update() {
 				s_PeerLastHeardFrom = now;
 				s_PeerReady = lines[1] == "1";
 				s_PeerName = lines[2].substr(0, 32);
+				s_PeerControlScheme = controlScheme;
 			} else if (lines[0] == "L join") {
 				std::string_view full = "L full";
 				sendto(s_GameSocket, full.data(), full.size(), 0, reinterpret_cast<sockaddr*>(&sender), senderSize);
@@ -301,7 +318,7 @@ void NetLobby::Update() {
 		}
 		if (s_HasPeer && now - s_LastSend > c_SendInterval) {
 			s_LastSend = now;
-			std::string text = (s_Starting ? "L start\n" : "L lobby\n") + GetLocalName() + "\n" + s_Setup.ToText();
+			std::string text = (s_Starting ? "L start\n" : "L lobby\n") + GetLocalName() + "\n" + s_Setup.ToText() + c_ControlSchemeMark + NetLockstep::GetOwnControlSchemeText();
 			sendto(s_GameSocket, text.data(), text.size(), 0, reinterpret_cast<sockaddr*>(&s_PeerAddress), sizeof(s_PeerAddress));
 		}
 		if (now - s_LastAnnouncement > c_AnnounceInterval) {
@@ -311,6 +328,7 @@ void NetLobby::Update() {
 	} else if (s_State == State::Joined) {
 		for (ssize_t received; (received = recv(s_GameSocket, buffer, sizeof(buffer), MSG_DONTWAIT)) > 0;) {
 			std::string text(buffer, static_cast<size_t>(received));
+			std::string controlScheme = TakeControlScheme(text);
 			size_t nameStart = text.find('\n');
 			size_t setupStart = nameStart == std::string::npos ? nameStart : text.find('\n', nameStart + 1);
 			bool isStart = text.starts_with("L start\n");
@@ -327,6 +345,7 @@ void NetLobby::Update() {
 					s_PeerLastHeardFrom = now;
 					s_PeerName = text.substr(nameStart + 1, setupStart - nameStart - 1).substr(0, 32);
 					s_Setup = setup;
+					s_PeerControlScheme = controlScheme;
 					// The host only starts a game that this machine said it was ready for, but it may have changed its mind and that not have got there yet.
 					s_GameIsToStart = isStart && s_Ready && setup.HasPlayersOnTeams() && HasContentFor(setup);
 				}
@@ -340,7 +359,7 @@ void NetLobby::Update() {
 		}
 		if (now - s_LastSend > c_SendInterval) {
 			s_LastSend = now;
-			std::string text = "L join\n" + std::string(s_Ready ? "1" : "0") + "\n" + GetLocalName();
+			std::string text = "L join\n" + std::string(s_Ready ? "1" : "0") + "\n" + GetLocalName() + c_ControlSchemeMark + NetLockstep::GetOwnControlSchemeText();
 			send(s_GameSocket, text.data(), text.size(), 0);
 		}
 	}
@@ -385,6 +404,9 @@ bool NetLobby::LaunchGame() {
 		std::string_view started = "L started";
 		send(s_GameSocket, started.data(), started.size(), 0);
 	}
+	// Each player plays with the controls that their own machine has for its first player.
+	std::string ownControlScheme = NetLockstep::GetOwnControlSchemeText();
+	NetLockstep::SetPlayerControlSchemeTexts(s_State == State::Hosting ? ownControlScheme : s_PeerControlScheme, s_State == State::Hosting ? s_PeerControlScheme : ownControlScheme);
 	NetLockstep::StartWhenGameStarts(s_GameSocket, s_State == State::Hosting ? 0 : 1);
 	// The connection is NetLockstep's now, and isn't to be closed or said goodbye over.
 	s_GameSocket = -1;
