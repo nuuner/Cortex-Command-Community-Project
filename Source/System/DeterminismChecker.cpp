@@ -97,6 +97,13 @@ void DeterminismChecker::CheckpointSimState(std::string_view label, bool checkSc
 		Checkpoint(std::format("{} - Lua state {} RNG", label, i), luaStates[i].GetRandomGenerator().PeekNext());
 	}
 
+	// For finding what it is that two machines have differently: set CCCP_DETERMINISM_DUMP to the sim update that their traces first differ at, and compare the files that this writes next to each one's trace.
+	if (const char* dumpUpdate = std::getenv("CCCP_DETERMINISM_DUMP"); dumpUpdate && s_Mode == Mode::Recording && std::atoll(dumpUpdate) == static_cast<long long>(g_TimerMan.GetSimUpdateCount())) {
+		std::ofstream dump(s_TraceFilePath + ".dump", std::ios::app);
+		dump << "==== " << label << "\n";
+		g_MovableMan.DumpState(dump);
+	}
+
 	StateHasher movableObjectsHasher;
 	g_MovableMan.HashState(movableObjectsHasher);
 	Checkpoint(std::format("{} - MovableObjects", label), movableObjectsHasher.GetHash());

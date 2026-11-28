@@ -751,6 +751,35 @@ void MovableMan::HashState(StateHasher& hasher) const {
 	}
 }
 
+void MovableMan::DumpState(std::ostream& output) const {
+	// Floats are written as their bits too, since two that differ can still look the same as text.
+	auto bits = [](float value) { uint32_t result; std::memcpy(&result, &value, sizeof(result)); return result; };
+	auto dump = [&](const MovableObject* movableObject, bool inFull) {
+		output << std::format("{} {} '{}' pos {} {} [{:08x} {:08x}] vel {} {} [{:08x} {:08x}] rot {} [{:08x}] angvel {} [{:08x}] flipped {}",
+		                      movableObject->GetUniqueID(), movableObject->GetClassName(), movableObject->GetPresetName(),
+		                      movableObject->GetPos().m_X, movableObject->GetPos().m_Y, bits(movableObject->GetPos().m_X), bits(movableObject->GetPos().m_Y),
+		                      movableObject->GetVel().m_X, movableObject->GetVel().m_Y, bits(movableObject->GetVel().m_X), bits(movableObject->GetVel().m_Y),
+		                      movableObject->GetRotAngle(), bits(movableObject->GetRotAngle()), movableObject->GetAngularVel(), bits(movableObject->GetAngularVel()), movableObject->IsHFlipped());
+		if (const Actor* actor = dynamic_cast<const Actor*>(movableObject)) {
+			output << std::format(" team {} status {} health {} [{:08x}]", actor->GetTeam(), static_cast<int>(actor->GetStatus()), actor->GetHealth(), bits(actor->GetHealth()));
+		}
+		output << "\n";
+		if (inFull) {
+			output << GetSyncText(movableObject) << "\n";
+		}
+	};
+	for (const std::deque<Actor*>* actors: {&m_Actors, &m_AddedActors}) {
+		for (const Actor* actor: *actors) {
+			dump(actor, true);
+		}
+	}
+	for (const std::deque<MovableObject*>* movableObjects: {&m_Items, &m_AddedItems, &m_Particles, &m_AddedParticles}) {
+		for (const MovableObject* movableObject: *movableObjects) {
+			dump(movableObject, false);
+		}
+	}
+}
+
 std::string MovableMan::GetSyncText(const MovableObject* movableObject) const {
 	// shortcut: this is how a saved game writes an MO, which leaves out what scripts keep about it and some of its inner workings. Those start over for an MO that gets recreated from this. Write MOs out in full once that shows.
 	if (const MOPixel* pixel = dynamic_cast<const MOPixel*>(movableObject); pixel && (pixel->GetPresetName().empty() || pixel->GetPresetName() == "None")) {

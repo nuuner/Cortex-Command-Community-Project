@@ -258,6 +258,10 @@ namespace RTE {
 		/// @param hasher The StateHasher to add the state to.
 		void HashState(StateHasher& hasher) const;
 
+		/// Writes out what HashState goes by for each MO, a line each, and all that is known about each Actor. For finding what it is that two runs of the simulation have differently.
+		/// @param output Where to write it to.
+		void DumpState(std::ostream& output) const;
+
 		/// Writes out what each MO is compared by between machines: its unique ID, and a hash of all that is known about it.
 		/// @param digest What to add it to the end of.
 		void WriteSyncDigest(std::string& digest) const;
