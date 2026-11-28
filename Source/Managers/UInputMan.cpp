@@ -1344,8 +1344,8 @@ void UInputMan::UpdateMouseInput() {
 	// won't cause the whole window to move if the user clicks the title bar and unintentionally drags it due to programmatic positioning.
 	int mousePosX = m_MouseStates.at(0).position.m_X / GetMouseResMultiplier();
 	int mousePosY = m_MouseStates.at(0).position.m_Y / GetMouseResMultiplier();
-	// When input is recorded or shared with another machine, mouse movement is enabled right away instead. In lockstep that goes for whatever turned it off, since this machine's window losing focus before the game began would otherwise leave it off for good.
 	// When input is recorded or shared with another machine, mouse movement is enabled right away instead. Where this machine's mouse is can't be allowed to decide it, since the mouse positions of the simulation get kept within the screen depending on this, and that has to happen in the same update on every machine.
+	// In lockstep that goes for whatever turned it off, since this machine's window losing focus before the game began would otherwise leave it off for good.
 	if (m_DisableMouseMoving && (m_PrepareToEnableMouseMoving || NetLockstep::IsActive()) && (InputRecorder::IsActive() || (mousePosX >= 0 && mousePosX < g_WindowMan.GetResX() && mousePosY >= 0 && mousePosY < g_WindowMan.GetResY()))) {
 		m_DisableMouseMoving = m_PrepareToEnableMouseMoving = false;
 	}
