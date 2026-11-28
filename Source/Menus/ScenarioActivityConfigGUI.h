@@ -90,6 +90,7 @@ namespace RTE {
 		GUICheckbox* m_FogOfWarCheckbox;
 		GUICheckbox* m_DeployUnitsCheckbox;
 		GUICheckbox* m_HostLANGameCheckbox;
+		GUIButton* m_LANControlsButton; //!< Changes what the host plays a LAN game with.
 		GUILabel* m_CPULockLabel;
 		GUICollectionBox* m_PlayersAndTeamsConfigBox;
 		std::array<GUICollectionBox*, TeamRows::TeamRowCount> m_TeamIconBoxes;

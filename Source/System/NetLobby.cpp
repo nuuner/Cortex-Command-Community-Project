@@ -2,6 +2,8 @@
 
 #include "ActivityMan.h"
 #include "GameActivity.h"
+#include "InputScheme.h"
+#include "UInputMan.h"
 #include "LuaMan.h"
 #include "NetLockstep.h"
 #include "PresetMan.h"
@@ -362,6 +364,25 @@ void NetLobby::Update() {
 			std::string text = "L join\n" + std::string(s_Ready ? "1" : "0") + "\n" + GetLocalName() + c_ControlSchemeMark + NetLockstep::GetOwnControlSchemeText();
 			send(s_GameSocket, text.data(), text.size(), 0);
 		}
+	}
+}
+
+std::string NetLobby::GetOwnControlsName() {
+	InputDevice device = g_UInputMan.GetControlScheme(Players::PlayerOne)->GetDevice();
+	return device == InputDevice::DEVICE_KEYB_ONLY ? "Keyboard" : (device == InputDevice::DEVICE_MOUSE_KEYB ? "Mouse + Keys" : "Gamepad");
+}
+
+void NetLobby::CycleOwnControls() {
+	InputScheme* controlScheme = g_UInputMan.GetControlScheme(Players::PlayerOne);
+	if (controlScheme->GetDevice() == InputDevice::DEVICE_KEYB_ONLY) {
+		controlScheme->SetDevice(InputDevice::DEVICE_MOUSE_KEYB);
+		controlScheme->SetPreset(InputScheme::InputPreset::PresetMouseWASDKeys);
+	} else if (controlScheme->GetDevice() == InputDevice::DEVICE_MOUSE_KEYB) {
+		controlScheme->SetDevice(InputDevice::DEVICE_GAMEPAD_1);
+		controlScheme->SetPreset(InputScheme::InputPreset::PresetGenericDualAnalog);
+	} else {
+		controlScheme->SetDevice(InputDevice::DEVICE_KEYB_ONLY);
+		controlScheme->SetPreset(InputScheme::InputPreset::PresetWASDKeys);
 	}
 }
 

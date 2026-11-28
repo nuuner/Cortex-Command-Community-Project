@@ -54,6 +54,7 @@ namespace RTE {
 		GUILabel* m_LobbyPlayersLabel;
 		GUILabel* m_LobbyReadyLabel;
 		GUILabel* m_LobbyStatusLabel;
+		GUIButton* m_ControlsButton;
 		GUIButton* m_ReadyButton;
 		GUIButton* m_LeaveGameButton;
 		GUIButton* m_BackToMainButton;

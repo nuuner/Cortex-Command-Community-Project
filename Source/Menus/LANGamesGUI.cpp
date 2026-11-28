@@ -48,6 +48,7 @@ LANGamesGUI::LANGamesGUI(AllegroScreen* guiScreen, GUIInputWrapper* guiInput) {
 	m_LobbyPlayersLabel = dynamic_cast<GUILabel*>(m_GUIControlManager->GetControl("LabelLobbyPlayers"));
 	m_LobbyReadyLabel = dynamic_cast<GUILabel*>(m_GUIControlManager->GetControl("LabelLobbyReady"));
 	m_LobbyStatusLabel = dynamic_cast<GUILabel*>(m_GUIControlManager->GetControl("LabelLobbyStatus"));
+	m_ControlsButton = dynamic_cast<GUIButton*>(m_GUIControlManager->GetControl("ButtonControls"));
 	m_ReadyButton = dynamic_cast<GUIButton*>(m_GUIControlManager->GetControl("ButtonReady"));
 	m_LeaveGameButton = dynamic_cast<GUIButton*>(m_GUIControlManager->GetControl("ButtonLeaveGame"));
 }
@@ -125,6 +126,7 @@ void LANGamesGUI::UpdateLobby() {
 	}
 	m_ReadyButton->SetVisible(hasContent);
 	m_ReadyButton->SetText(NetLobby::IsReady() ? "Not Ready" : "Ready");
+	m_ControlsButton->SetText("Controls: " + NetLobby::GetOwnControlsName());
 	if (!hasContent) {
 		NetLobby::SetReady(false);
 	}
@@ -172,6 +174,9 @@ LANGamesGUI::UpdateResult LANGamesGUI::Update() {
 					NetLobby::Game game = NetLobby::GetGames()[selectedIndex];
 					NetLobby::Join(game);
 				}
+			} else if (guiEvent.GetControl() == m_ControlsButton) {
+				g_GUISound.ButtonPressSound()->Play();
+				NetLobby::CycleOwnControls();
 			} else if (guiEvent.GetControl() == m_ReadyButton) {
 				g_GUISound.ButtonPressSound()->Play();
 				NetLobby::SetReady(!NetLobby::IsReady());

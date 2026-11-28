@@ -38,6 +38,7 @@ ScenarioActivityConfigGUI::ScenarioActivityConfigGUI(GUIControlManager* parentCo
 	m_FogOfWarCheckbox = dynamic_cast<GUICheckbox*>(m_GUIControlManager->GetControl("CheckboxFogOfWar"));
 	m_DeployUnitsCheckbox = dynamic_cast<GUICheckbox*>(m_GUIControlManager->GetControl("CheckboxDeployUnits"));
 	m_HostLANGameCheckbox = dynamic_cast<GUICheckbox*>(m_GUIControlManager->GetControl("CheckboxHostLANGame"));
+	m_LANControlsButton = dynamic_cast<GUIButton*>(m_GUIControlManager->GetControl("ButtonLANControls"));
 
 	m_PlayersAndTeamsConfigBox = dynamic_cast<GUICollectionBox*>(m_GUIControlManager->GetControl("CollectionBoxPlayersAndTeamsConfig"));
 	m_TeamIconBoxes[TeamRows::DisabledTeam] = dynamic_cast<GUICollectionBox*>(m_GUIControlManager->GetControl("CollectionBoxDisabledTeamIcon"));
@@ -374,6 +375,9 @@ bool ScenarioActivityConfigGUI::Update(int mouseX, int mouseY) {
 	int maxHumanPlayers = m_SelectedActivity->GetMaxPlayerSupport();
 	int minTeamsRequired = m_SelectedActivity->GetMinTeamsRequired();
 
+	m_LANControlsButton->SetVisible(NetLobby::IsHosting());
+	m_LANControlsButton->SetText("Controls: " + NetLobby::GetOwnControlsName());
+
 	std::vector humanPlayers = GetHumanPlayers();
 	std::string errorMessage = "";
 	if (humansInTeams > maxHumanPlayers) {
@@ -528,7 +532,10 @@ bool ScenarioActivityConfigGUI::HandleInputEvents() {
 	GUIEvent guiEvent;
 	while (m_GUIControlManager->GetEvent(&guiEvent)) {
 		if (guiEvent.GetType() == GUIEvent::Command) {
-			if (guiEvent.GetControl() == m_CancelConfigButton) {
+			if (guiEvent.GetControl() == m_LANControlsButton) {
+				g_GUISound.ButtonPressSound()->Play();
+				NetLobby::CycleOwnControls();
+			} else if (guiEvent.GetControl() == m_CancelConfigButton) {
 				g_GUISound.BackButtonPressSound()->Play();
 				SetEnabled(false);
 			} else if (guiEvent.GetControl() == m_StartGameButton) {

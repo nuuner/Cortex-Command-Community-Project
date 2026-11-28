@@ -110,6 +110,13 @@ namespace RTE {
 		/// Gets whether this machine has the Activity and Scene of a setup.
 		static bool HasContentFor(const Setup& setup);
 
+		/// Gets what this machine's player plays a game with: the device of player 1's control scheme, as a few words to show.
+		static std::string GetOwnControlsName();
+
+		/// Changes what this machine's player plays with to the next kind of device: keyboard, mouse and keyboard, or gamepad.
+		/// shortcut: this sets player 1's control scheme to that device's usual keys or buttons, replacing mappings of their own. Leave those be if someone minds.
+		static void CycleOwnControls();
+
 		/// Gets what went wrong last, to show to the player.
 		static const std::string& GetError() { return s_Error; }
 
