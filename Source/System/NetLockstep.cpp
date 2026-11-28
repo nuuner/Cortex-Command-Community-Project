@@ -467,6 +467,7 @@ void NetLockstep::BeginSimUpdate() {
 	SendState(extraLines);
 
 	auto waitStart = Clock::now();
+	long long remoteCompleteAtWaitStart = s_RemoteCompleteThrough;
 	auto lastSend = waitStart;
 	Receive();
 	if (UseReceivedBlob()) {
@@ -494,6 +495,26 @@ void NetLockstep::BeginSimUpdate() {
 		}
 	}
 	// A wait of less than an update is just this machine keeping in step with the other one, and doesn't show.
+	// For tuning the input delay: set CCCP_NET_LOG to get a line a second about how evenly this machine gets to its updates, and how long it waits for the other one's input.
+	static const bool logTimings = std::getenv("CCCP_NET_LOG") != nullptr;
+	if (logTimings) {
+		static Clock::time_point lastUpdateStart = waitStart;
+		static double longestIntervalMS = 0.0, longestWaitMS = 0.0, totalWaitMS = 0.0;
+		double waitMS = std::chrono::duration<double, std::milli>(Clock::now() - waitStart).count();
+		longestIntervalMS = std::max(longestIntervalMS, std::chrono::duration<double, std::milli>(waitStart - lastUpdateStart).count());
+		static double lastWaitMS = 0.0;
+		if (waitMS > 25.0) {
+			std::cerr << std::format("Lockstep wait: update {}, waited {:.0f} ms for input through it, had it through {} when the wait began. This machine took {:.0f} ms over the update before, apart from waiting. Delay {}, own input complete through {}.", s_SimUpdate, waitMS, remoteCompleteAtWaitStart, std::chrono::duration<double, std::milli>(waitStart - lastUpdateStart).count() - lastWaitMS, s_InputDelay, s_LocalCompleteThrough) << std::endl;
+		}
+		lastWaitMS = waitMS;
+		longestWaitMS = std::max(longestWaitMS, waitMS);
+		totalWaitMS += waitMS;
+		lastUpdateStart = waitStart;
+		if (s_SimUpdate % 60 == 0) {
+			std::cerr << std::format("Lockstep timing: update {}, delay {} (allowance {}), worst ping {:.0f} ms, longest gap between updates {:.0f} ms, waited {:.0f} ms in all and {:.0f} ms at most.", s_SimUpdate, s_InputDelay, s_StallAllowance, s_PingSamplesMS.empty() ? 0.0 : *std::max_element(s_PingSamplesMS.begin(), s_PingSamplesMS.end()), longestIntervalMS, totalWaitMS, longestWaitMS) << std::endl;
+			longestIntervalMS = longestWaitMS = totalWaitMS = 0.0;
+		}
+	}
 	if (double waitedMS = std::chrono::duration<double, std::milli>(Clock::now() - waitStart).count(); waitedMS > g_TimerMan.GetDeltaTimeMS()) {
 		++s_StalledUpdateCount;
 		s_StalledMS += waitedMS;
