@@ -6,6 +6,7 @@
 #include "UInputMan.h"
 #include "SettingsMan.h"
 #include "ConsoleMan.h"
+#include "NetLobby.h"
 
 #include "GameVersion.h"
 
@@ -39,6 +40,7 @@ void MainMenuGUI::Clear() {
 	m_SaveLoadMenu = nullptr;
 	m_SettingsMenu = nullptr;
 	m_ModManagerMenu = nullptr;
+	m_LANGamesMenu = nullptr;
 
 	m_VersionLabel = nullptr;
 	m_CreditsTextLabel = nullptr;
@@ -81,6 +83,7 @@ void MainMenuGUI::Create(AllegroScreen* guiScreen, GUIInputWrapper* guiInput) {
 	m_SaveLoadMenu = std::make_unique<SaveLoadMenuGUI>(guiScreen, guiInput);
 	m_SettingsMenu = std::make_unique<SettingsGUI>(guiScreen, guiInput);
 	m_ModManagerMenu = std::make_unique<ModManagerGUI>(guiScreen, guiInput);
+	m_LANGamesMenu = std::make_unique<LANGamesGUI>(guiScreen, guiInput);
 
 	// Set the active screen to the settings screen otherwise we're at the main screen after reinitializing.
 	SetActiveMenuScreen(g_WindowMan.ResolutionChanged() ? MenuScreen::SettingsScreen : MenuScreen::MainScreen, false);
@@ -92,6 +95,7 @@ void MainMenuGUI::CreateMainScreen() {
 
 	m_MainMenuButtons[MenuButton::MetaGameButton] = dynamic_cast<GUIButton*>(m_MainMenuScreenGUIControlManager->GetControl("ButtonMainToMetaGame"));
 	m_MainMenuButtons[MenuButton::ScenarioButton] = dynamic_cast<GUIButton*>(m_MainMenuScreenGUIControlManager->GetControl("ButtonMainToSkirmish"));
+	m_MainMenuButtons[MenuButton::MultiplayerButton] = dynamic_cast<GUIButton*>(m_MainMenuScreenGUIControlManager->GetControl("ButtonMainToMultiplayer"));
 	m_MainMenuButtons[MenuButton::SaveOrLoadGameButton] = dynamic_cast<GUIButton*>(m_MainMenuScreenGUIControlManager->GetControl("ButtonSaveOrLoadGame"));
 	m_MainMenuButtons[MenuButton::SettingsButton] = dynamic_cast<GUIButton*>(m_MainMenuScreenGUIControlManager->GetControl("ButtonMainToOptions"));
 	m_MainMenuButtons[MenuButton::ModManagerButton] = dynamic_cast<GUIButton*>(m_MainMenuScreenGUIControlManager->GetControl("ButtonMainToModManager"));
@@ -179,6 +183,10 @@ void MainMenuGUI::HideAllScreens() {
 
 void MainMenuGUI::SetActiveMenuScreen(MenuScreen screenToShow, bool playButtonPressSound) {
 	if (screenToShow != m_ActiveMenuScreen) {
+		if (m_ActiveMenuScreen == MenuScreen::MultiplayerScreen) {
+			// Nothing is left of the lobby once its screen is, however it was left.
+			NetLobby::Leave();
+		}
 		HideAllScreens();
 		m_ActiveMenuScreen = screenToShow;
 		m_ActiveGUIControlManager = (m_ActiveMenuScreen == MenuScreen::MainScreen) ? m_MainMenuScreenGUIControlManager.get() : m_SubMenuScreenGUIControlManager.get();
@@ -197,7 +205,7 @@ void MainMenuGUI::SetActiveMenuScreen(MenuScreen screenToShow, bool playButtonPr
 void MainMenuGUI::ShowMainScreen() {
 	m_VersionLabel->SetVisible(true);
 
-	m_MainMenuScreens[MenuScreen::MainScreen]->Resize(300, 196);
+	m_MainMenuScreens[MenuScreen::MainScreen]->Resize(300, 216);
 	m_MainMenuScreens[MenuScreen::MainScreen]->SetVisible(true);
 
 	m_MainMenuButtons[MenuButton::BackToMainButton]->SetVisible(false);
@@ -268,7 +276,7 @@ void MainMenuGUI::ShowAndBlinkResumeButton() {
 	if (!m_MainMenuButtons[MenuButton::ResumeButton]->GetVisible()) {
 		m_ResumeButtonBlinkTimer.Reset();
 		if (g_ActivityMan.GetActivity() && (g_ActivityMan.GetActivity()->GetActivityState() == Activity::Running || g_ActivityMan.GetActivity()->GetActivityState() == Activity::Editing)) {
-			m_MainMenuScreens[MenuScreen::MainScreen]->Resize(300, 220);
+			m_MainMenuScreens[MenuScreen::MainScreen]->Resize(300, 240);
 			m_MainMenuButtons[MenuButton::ResumeButton]->SetVisible(true);
 		}
 	} else {
@@ -324,6 +332,19 @@ MainMenuGUI::MainMenuUpdateResult MainMenuGUI::Update() {
 			break;
 		case MenuScreen::ModManagerScreen:
 			backToMainMenu = m_ModManagerMenu->HandleInputEvents();
+			break;
+		case MenuScreen::MultiplayerScreen:
+			switch (m_LANGamesMenu->Update()) {
+				case LANGamesGUI::UpdateResult::BackToMain:
+					backToMainMenu = true;
+					break;
+				case LANGamesGUI::UpdateResult::GameStarted:
+					m_UpdateResult = MainMenuUpdateResult::ActivityStarted;
+					SetActiveMenuScreen(MenuScreen::MainScreen, false);
+					break;
+				default:
+					break;
+			}
 			break;
 		case MenuScreen::EditorScreen:
 			if (m_MenuScreenChange) {
@@ -422,6 +443,8 @@ void MainMenuGUI::HandleMainScreenInputEvents(const GUIControl* guiEventControl)
 		}
 	} else if (guiEventControl == m_MainMenuButtons[MenuButton::ScenarioButton]) {
 		m_UpdateResult = MainMenuUpdateResult::ScenarioStarted;
+	} else if (guiEventControl == m_MainMenuButtons[MenuButton::MultiplayerButton]) {
+		SetActiveMenuScreen(MenuScreen::MultiplayerScreen);
 	} else if (guiEventControl == m_MainMenuButtons[MenuButton::SaveOrLoadGameButton]) {
 		SetActiveMenuScreen(MenuScreen::SaveOrLoadGameScreen);
 	} else if (guiEventControl == m_MainMenuButtons[MenuButton::SettingsButton]) {
@@ -517,6 +540,9 @@ void MainMenuGUI::Draw() {
 			break;
 		case MenuScreen::ModManagerScreen:
 			m_ModManagerMenu->Draw();
+			break;
+		case MenuScreen::MultiplayerScreen:
+			m_LANGamesMenu->Draw();
 			break;
 		default:
 			m_ActiveGUIControlManager->Draw();

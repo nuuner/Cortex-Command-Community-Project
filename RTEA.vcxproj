@@ -775,6 +775,7 @@
     <ClInclude Include="Source\Managers\ThreadMan.h" />
     <ClInclude Include="Source\Managers\WindowMan.h" />
     <ClInclude Include="Source\Menus\LoadingScreen.h" />
+    <ClInclude Include="Source\Menus\LANGamesGUI.h" />
     <ClInclude Include="Source\Menus\ModManagerGUI.h" />
     <ClInclude Include="Source\Menus\PauseMenuGUI.h" />
     <ClInclude Include="Source\Menus\SaveLoadMenuGUI.h" />
@@ -828,6 +829,7 @@
     <ClInclude Include="Source\System\Singleton.h" />
     <ClInclude Include="Source\System\DeterminismChecker.h" />
     <ClInclude Include="Source\System\InputRecorder.h" />
+    <ClInclude Include="Source\System\NetLobby.h" />
     <ClInclude Include="Source\System\NetLockstep.h" />
     <ClInclude Include="Source\System\System.h" />
     <ClInclude Include="Source\System\Timer.h" />
@@ -1040,6 +1042,7 @@
     <ClCompile Include="Source\Managers\ThreadMan.cpp" />
     <ClCompile Include="Source\Managers\WindowMan.cpp" />
     <ClCompile Include="Source\Menus\LoadingScreen.cpp" />
+    <ClCompile Include="Source\Menus\LANGamesGUI.cpp" />
     <ClCompile Include="Source\Menus\ModManagerGUI.cpp" />
     <ClCompile Include="Source\Menus\PauseMenuGUI.cpp" />
     <ClCompile Include="Source\Menus\SaveLoadMenuGUI.cpp" />
@@ -1371,6 +1374,7 @@
     <ClCompile Include="Source\System\Reader.cpp" />
     <ClCompile Include="Source\System\DeterminismChecker.cpp" />
     <ClCompile Include="Source\System\InputRecorder.cpp" />
+    <ClCompile Include="Source\System\NetLobby.cpp" />
     <ClCompile Include="Source\System\NetLockstep.cpp" />
     <ClCompile Include="Source\System\System.cpp" />
     <ClCompile Include="Source\System\Timer.cpp" />

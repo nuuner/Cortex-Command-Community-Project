@@ -67,18 +67,6 @@ void ActivityMan::Clear() {
 	m_LaunchIntoEditor = false;
 }
 
-/// Gives the players of the machines in lockstep the same controls, on the made up devices that their input arrives on.
-static void SetUpLockstepControlSchemes() {
-	for (int player = Players::PlayerOne; player <= Players::PlayerTwo; ++player) {
-		InputScheme* controlScheme = g_UInputMan.GetControlScheme(player);
-		controlScheme->SetDevice(InputDevice::DEVICE_MOUSE_KEYB);
-		controlScheme->SetPreset(InputScheme::InputPreset::PresetMouseWASDKeys);
-		DeviceID deviceID;
-		deviceID.mouseKeyboard = {NetLockstep::GetPlayerDeviceID(player), NetLockstep::GetPlayerDeviceID(player)};
-		controlScheme->SetDeviceID(deviceID);
-	}
-}
-
 bool ActivityMan::Initialize() {
 	if (IsSetToLaunchIntoEditor()) {
 		// Evaluate LaunchIntoEditor before LaunchIntoActivity so it takes priority when both are set, otherwise it is ignored and editor is never launched.
@@ -86,7 +74,7 @@ bool ActivityMan::Initialize() {
 	} else if (!m_SaveGameToLaunch.empty()) {
 		// A game that machines in lockstep carry on from already has its players, but the controls aren't part of it.
 		if (NetLockstep::IsActive()) {
-			SetUpLockstepControlSchemes();
+			NetLockstep::SetUpControlSchemes();
 		}
 		return LoadAndLaunchGame(m_SaveGameToLaunch);
 	} else if (!m_ActivityNameToLaunch.empty()) {
@@ -495,7 +483,7 @@ bool ActivityMan::SetStartActivitySetToLaunchInto() {
 			for (int player = Players::PlayerOne; player <= Players::PlayerTwo; ++player) {
 				gameActivityToStart->AddPlayer(player, true, Activity::Teams::TeamOne + player, 0);
 			}
-			SetUpLockstepControlSchemes();
+			NetLockstep::SetUpControlSchemes();
 		} else if (gameActivityToStart->GetCPUTeam() == Activity::Teams::NoTeam) {
 			// Activities come set up with just player one, so give them the CPU to play against, unless the Activity decides that by itself.
 			gameActivityToStart->SetCPUTeam(Activity::Teams::TeamTwo);
@@ -616,6 +604,7 @@ bool ActivityMan::RestartActivity() {
 	g_MovableMan.PurgeAllMOs();
 	// Have to reset TimerMan before creating anything else because all timers are reset against it.
 	g_TimerMan.ResetTime();
+	NetLockstep::PrepareGameStart();
 
 	// TODO: Deal with GUI resetting here!$@#") // Figure out what the hell this is about.
 

@@ -86,6 +86,25 @@ namespace RTE {
 		/// Closes the connection.
 		static void Stop();
 
+		/// Hands over a connection to the other machine that was made in the menus, for playing the game that is about to start over.
+		/// @param connectedSocket The UDP socket that is connected to the other machine. This closes it when done with it.
+		/// @param localPlayer Which player this machine is, with the host being the first.
+		static void StartWhenGameStarts(int connectedSocket, int localPlayer);
+
+		/// Has to be called when a game is started, after the time has been reset and before anything of the game has been made.
+		/// Starts playing in lockstep if a connection for it was handed over, and gets what the simulation goes by to start out the same on both machines.
+		static void PrepareGameStart();
+
+		/// Gives the players of the machines the same controls, on the made up devices that their input arrives on. The players' own get put back when the connection is closed.
+		static void SetUpControlSchemes();
+
+		/// Gets why the last game that was set up in the menus ended, to show to the player.
+		/// @return The reason, or nothing if there wasn't one.
+		static const std::string& GetLastGameEnding() { return s_LastGameEnding; }
+
+		/// Forgets why the last game ended, once the player has been shown.
+		static void ClearLastGameEnding() { s_LastGameEnding.clear(); }
+
 	private:
 		static constexpr long long c_MaxInputDelay = 30; //!< The most simulation updates that input can be held back for.
 		static constexpr Uint32 c_VirtualDeviceBase = 1000; //!< The mouse and keyboard ID of the first player. Each player gets a made up device, which is the same on both machines.
@@ -101,6 +120,11 @@ namespace RTE {
 		static int s_LocalPlayer; //!< Which player this machine is.
 		static long long s_ForcedResyncUpdate; //!< The simulation update at which the host rebuilds the machines from its own game for testing, or -1.
 		static long long s_ForcedDesyncUpdate; //!< The simulation update at which this machine throws its simulation off for testing, or -1.
+		static std::string s_LastGameEnding; //!< Why the last game that was set up in the menus ended.
+
+		/// Ends the game for a reason that the player is told: by going back to the menus if it was set up there, and by quitting otherwise.
+		/// @param reason The reason.
+		static void EndGame(const std::string& reason);
 
 		/// Measures how long the connection takes, and fits the input delay of this machine to it. Each machine does this for its own input, without the other having to agree.
 		/// @return The line that asks the other machine to answer for the measurement, when it is time for one.

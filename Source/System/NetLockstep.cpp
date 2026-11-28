@@ -10,7 +10,10 @@
 #include "TimerMan.h"
 
 #include "DeterminismChecker.h"
+#include "ConsoleMan.h"
 #include "InputRecorder.h"
+#include "InputScheme.h"
+#include "UInputMan.h"
 #include "RTETools.h"
 #include "System.h"
 
@@ -49,6 +52,7 @@ int NetLockstep::s_ArtificialLossPercent = 0;
 bool NetLockstep::s_Active = false;
 bool NetLockstep::s_Desynced = false;
 int NetLockstep::s_LocalPlayer = 0;
+std::string NetLockstep::s_LastGameEnding;
 long long NetLockstep::s_ForcedResyncUpdate = -1;
 long long NetLockstep::s_ForcedDesyncUpdate = -1;
 
@@ -100,6 +104,12 @@ namespace {
 	long long s_LastObjectCorrectionUpdate = -c_ObjectCorrectionHoldUpdates; //!< The simulation update that the other machine last had objects recreated at.
 
 	int s_Socket = -1; //!< The UDP socket that is connected to the other machine.
+	int s_PendingSocket = -1; //!< The socket of a connection that was made in the menus, for the game that is about to start.
+	int s_PendingLocalPlayer = 0; //!< Which player this machine is in the game that is about to start.
+	bool s_StartedFromMenus = false; //!< Whether the game was set up in the menus, which it then goes back to when it is over, rather than the program quitting.
+	bool s_LeaveIsWanted = false; //!< Whether this machine's player asked to leave the game.
+	InputScheme s_OwnControlSchemes[c_PlayerCount]; //!< The control schemes that the players of this machine had before the game took them over.
+	bool s_ControlSchemesAreTakenOver = false; //!< Whether the control schemes are the game's, and the players' own are to be put back.
 	Clock::time_point s_LastHeardFrom; //!< When something last arrived from the other machine.
 	bool s_PeerIsGone = false; //!< Whether the other machine has disconnected.
 	bool s_ApplyingInput = false; //!< Whether input is being handed back to UInputMan, and so shouldn't be captured.
@@ -340,8 +350,9 @@ bool NetLockstep::CaptureLocalInput(const SDL_Event& inputEvent) {
 	switch (inputEvent.type) {
 		case SDL_EVENT_KEY_UP:
 		case SDL_EVENT_KEY_DOWN:
-			// shortcut: Escape pauses into the menus, which the two machines would then get through on their own. Let it through once pausing is synced.
+			// shortcut: Escape pauses into the menus, which the two machines would then get through on their own. It leaves the game instead, until pausing is synced.
 			if (inputEvent.key.scancode == SDL_SCANCODE_ESCAPE) {
+				s_LeaveIsWanted = s_LeaveIsWanted || (s_StartedFromMenus && inputEvent.type == SDL_EVENT_KEY_DOWN);
 				return true;
 			}
 			playerEvent.key.which = deviceID;
@@ -368,6 +379,10 @@ void NetLockstep::BeginSimUpdate() {
 	if (!s_Active) {
 		return;
 	}
+	if (s_LeaveIsWanted) {
+		EndGame("You left the game.");
+		return;
+	}
 	++s_SimUpdate;
 	if (s_Epoch == 0 && s_SimUpdate == s_ForcedDesyncUpdate) {
 		// Using up a random number is enough to send this machine's simulation its own way, and shoving an actor over makes for objects that are off as well.
@@ -392,7 +407,7 @@ void NetLockstep::BeginSimUpdate() {
 			if (!CorrectOtherMachine()) {
 				std::cerr << "Lockstep: failed to get the other player's game matching again, ending at update " << s_SimUpdate << "." << std::endl;
 				s_Desynced = true;
-				System::SetQuit();
+				EndGame("The two games stopped matching.");
 				return;
 			}
 			if (s_SimUpdate == 0) {
@@ -451,7 +466,7 @@ void NetLockstep::BeginSimUpdate() {
 		if (s_PeerIsGone || silentForTooLong) {
 			std::cerr << "Lockstep: the other player is gone, ending at update " << s_SimUpdate << "." << std::endl;
 			s_PeerIsGone = true;
-			System::SetQuit();
+			EndGame("The other player left the game.");
 			return;
 		}
 		// Both machines could be waiting on a message of the other's that got lost, so what the other one may be missing is sent again every so often.
@@ -548,6 +563,86 @@ void NetLockstep::Stop() {
 	std::cerr << std::format("Lockstep: {} updates waited for the other player's input, for {:.0f} ms in total.", s_StalledUpdateCount, s_StalledMS) << std::endl;
 	std::cerr << std::format("Lockstep: input delay ended at {} updates, with a ping of about {:.0f} ms. {} of {} messages were thrown away.", s_InputDelay, s_PingSamplesMS.empty() ? 0.0 : s_PingSamplesMS.back(), s_LostMessageCount, s_SentMessageCount) << std::endl;
 	s_Active = false;
+	if (s_ControlSchemesAreTakenOver) {
+		for (int player = 0; player < c_PlayerCount; ++player) {
+			g_UInputMan.GetControlScheme(player)->Create(s_OwnControlSchemes[player]);
+		}
+		s_ControlSchemesAreTakenOver = false;
+	}
+}
+
+void NetLockstep::EndGame(const std::string& reason) {
+	if (!s_StartedFromMenus) {
+		System::SetQuit();
+		return;
+	}
+	Stop();
+	s_LastGameEnding = reason;
+	g_ConsoleMan.PrintString("SYSTEM: " + reason);
+	// The game can't be carried on with from here, so it is ended rather than left for the menus to offer resuming.
+	g_ActivityMan.EndActivity();
+	g_ActivityMan.PauseActivity(true, true);
+}
+
+void NetLockstep::SetUpControlSchemes() {
+	for (int player = 0; player < c_PlayerCount; ++player) {
+		InputScheme* controlScheme = g_UInputMan.GetControlScheme(player);
+		if (!s_ControlSchemesAreTakenOver) {
+			s_OwnControlSchemes[player].Create(*controlScheme);
+		}
+		controlScheme->SetDevice(InputDevice::DEVICE_MOUSE_KEYB);
+		controlScheme->SetPreset(InputScheme::InputPreset::PresetMouseWASDKeys);
+		DeviceID deviceID;
+		deviceID.mouseKeyboard = {GetPlayerDeviceID(player), GetPlayerDeviceID(player)};
+		controlScheme->SetDeviceID(deviceID);
+	}
+	s_ControlSchemesAreTakenOver = true;
+}
+
+void NetLockstep::StartWhenGameStarts(int connectedSocket, int localPlayer) {
+	s_PendingSocket = connectedSocket;
+	s_PendingLocalPlayer = localPlayer;
+}
+
+void NetLockstep::PrepareGameStart() {
+	if (s_PendingSocket >= 0) {
+		Stop();
+		s_Socket = s_PendingSocket;
+		s_PendingSocket = -1;
+		s_LocalPlayer = s_PendingLocalPlayer;
+		s_StartedFromMenus = true;
+		s_LeaveIsWanted = false;
+		s_LastGameEnding.clear();
+
+		// Whatever is left of a game before this one is forgotten.
+		StartEpoch(0);
+		s_PeerIsGone = false;
+		s_Desynced = false;
+		s_PatchCount = 0;
+		s_LastBlobID = 0;
+		s_IncomingBlobID = 0;
+		s_VerdictBlobID = 0;
+		s_WantedBlobID = 0;
+		s_Blob.clear();
+		s_ReceivedBlob.clear();
+		s_PingSamplesMS.clear();
+		s_StallAllowance = 0;
+		s_MatchedHashCount = 0;
+		if (!s_InputDelayIsFixed) {
+			s_InputDelay = 3;
+		}
+		s_LastHeardFrom = Clock::now();
+		s_Active = true;
+		std::cerr << "Lockstep: starting a game from the menus, playing as player " << s_LocalPlayer + 1 << "." << std::endl;
+	}
+	if (!s_Active) {
+		return;
+	}
+	// Everything that the simulation goes by and that the game doesn't set up itself has to start out the same on both machines.
+	// shortcut: the script states carry over what earlier games left in them, which can differ between the machines. Make them anew here once that shows.
+	MovableObject::SetUniqueIDCounters(std::vector<int64_t>(MovableObject::GetUniqueIDCounters().size(), 0));
+	SeedSimRandomGenerators(0);
+	SetUpControlSchemes();
 }
 
 void NetLockstep::SendState(const std::string& extraLines) {
@@ -619,6 +714,11 @@ void NetLockstep::Receive() {
 			SendNow("welcome");
 		} else if (text == "bye") {
 			s_PeerIsGone = true;
+		} else if (text.starts_with("L ")) {
+			// The host keeps saying to start the game until it hears that this machine has, and that got lost.
+			if (text.starts_with("L start") && s_LocalPlayer != 0) {
+				SendNow("L started");
+			}
 		} else if (text.starts_with("S ") || text.starts_with("K ")) {
 			HandleBlobPart(text);
 		} else if (text != "welcome") {
@@ -873,7 +973,7 @@ bool NetLockstep::UseReceivedBlob() {
 		s_ReceivedBlob.clear();
 		if (!RebuildGame()) {
 			s_Desynced = true;
-			System::SetQuit();
+			EndGame("The two games stopped matching.");
 		} else {
 			std::cerr << "Lockstep: rebuilt this game from the host's." << std::endl;
 		}

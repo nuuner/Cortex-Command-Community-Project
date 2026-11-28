@@ -37,6 +37,7 @@ ScenarioActivityConfigGUI::ScenarioActivityConfigGUI(GUIControlManager* parentCo
 	m_RequireClearPathToOrbitCheckbox = dynamic_cast<GUICheckbox*>(m_GUIControlManager->GetControl("CheckboxRequireClearPathToOrbit"));
 	m_FogOfWarCheckbox = dynamic_cast<GUICheckbox*>(m_GUIControlManager->GetControl("CheckboxFogOfWar"));
 	m_DeployUnitsCheckbox = dynamic_cast<GUICheckbox*>(m_GUIControlManager->GetControl("CheckboxDeployUnits"));
+	m_HostLANGameCheckbox = dynamic_cast<GUICheckbox*>(m_GUIControlManager->GetControl("CheckboxHostLANGame"));
 
 	m_PlayersAndTeamsConfigBox = dynamic_cast<GUICollectionBox*>(m_GUIControlManager->GetControl("CollectionBoxPlayersAndTeamsConfig"));
 	m_TeamIconBoxes[TeamRows::DisabledTeam] = dynamic_cast<GUICollectionBox*>(m_GUIControlManager->GetControl("CollectionBoxDisabledTeamIcon"));
@@ -93,6 +94,11 @@ bool ScenarioActivityConfigGUI::IsEnabled() const {
 }
 
 void ScenarioActivityConfigGUI::SetEnabled(bool enable, const Activity* selectedActivity, Scene* selectedScene) {
+	// A LAN game is only hosted for as long as this is showing, and has to be asked for each time.
+	if (NetLobby::IsHosting()) {
+		NetLobby::Leave();
+	}
+	m_HostLANGameCheckbox->SetCheck(GUICheckbox::Unchecked);
 	m_ActivityConfigBox->SetEnabled(enable);
 	m_ActivityConfigBox->SetVisible(enable);
 
@@ -230,7 +236,69 @@ void ScenarioActivityConfigGUI::ResetActivityConfigBox() {
 	}
 }
 
+NetLobby::Setup ScenarioActivityConfigGUI::GetLANGameSetup(bool pickRandomTechs) {
+	NetLobby::Setup setup;
+	setup.ActivityClass = m_SelectedActivity->GetClassName();
+	setup.ActivityPreset = m_SelectedActivity->GetModuleAndPresetName();
+	setup.ScenePreset = m_SelectedScene->GetModuleAndPresetName();
+	setup.Difficulty = m_ActivityDifficultySlider->GetValue();
+	setup.StartingGold = (m_StartingGoldSlider->GetValue() == m_StartingGoldSlider->GetMaximum()) ? 1000000000 : static_cast<int>(std::floor(m_StartingGoldSlider->GetValue()));
+	setup.RequireClearPathToOrbit = m_RequireClearPathToOrbitCheckbox->GetCheck();
+	setup.FogOfWar = m_FogOfWarCheckbox->GetCheck();
+	setup.DeployUnits = m_DeployUnitsCheckbox->GetCheck();
+
+	// Player one is the player of this machine, and player two the one of the machine that joins.
+	setup.PlayerTeams[0] = Activity::Teams::NoTeam;
+	setup.PlayerTeams[1] = Activity::Teams::NoTeam;
+	for (int team = Activity::Teams::TeamOne; team < Activity::Teams::MaxTeamCount; ++team) {
+		for (int player = Players::PlayerOne; player <= Players::PlayerTwo; ++player) {
+			if (m_PlayerBoxes.at(player).at(team)->GetDrawType() == GUICollectionBox::Image) {
+				setup.PlayerTeams[player] = team;
+			}
+		}
+		if (m_PlayerBoxes.at(PlayerColumns::PlayerCPU).at(team)->GetDrawType() == GUICollectionBox::Image) {
+			setup.CPUTeam = team;
+		}
+		if (const GUIListPanel::Item* techItem = m_TeamTechComboBoxes.at(team)->GetSelectedItem()) {
+			if (techItem->m_ExtraIndex == -2) {
+				setup.TeamTechs[team] = "-All-";
+			} else if (techItem->m_ExtraIndex == -1) {
+				setup.TeamTechs[team] = pickRandomTechs ? g_PresetMan.GetDataModuleName(m_TeamTechComboBoxes.at(team)->GetItem(RandomNum<int>(2, m_TeamTechComboBoxes.at(team)->GetListPanel()->GetItemList()->size() - 1))->m_ExtraIndex) : "-Random-";
+			} else {
+				setup.TeamTechs[team] = g_PresetMan.GetDataModuleName(techItem->m_ExtraIndex);
+			}
+		}
+		setup.TeamAISkills[team] = m_TeamAISkillSliders.at(team)->IsEnabled() ? m_TeamAISkillSliders.at(team)->GetValue() : Activity::AISkillSetting::DefaultSkill;
+	}
+	return setup;
+}
+
+std::string ScenarioActivityConfigGUI::GetLANGameStatus() {
+	for (int team = Activity::Teams::TeamOne; team < Activity::Teams::MaxTeamCount; ++team) {
+		for (int player = Players::PlayerThree; player < Players::MaxPlayerCount; ++player) {
+			if (m_PlayerBoxes.at(player).at(team)->GetDrawType() == GUICollectionBox::Image) {
+				return "LAN games are for two players. Take players 3 and 4 off the teams!";
+			}
+		}
+	}
+	if (!GetLANGameSetup(false).HasPlayersOnTeams()) {
+		return "Put player 1 (you) and player 2 (the player who joins) on teams!";
+	} else if (!NetLobby::HasPeer()) {
+		return "Waiting for a player on your network to join from their Multiplayer menu...";
+	} else if (!NetLobby::IsPeerReady()) {
+		return NetLobby::GetPeerName() + " has joined. Waiting for them to be ready...";
+	} else if (NetLobby::IsStarting()) {
+		return "Starting the game with " + NetLobby::GetPeerName() + "...";
+	}
+	return "";
+}
+
 void ScenarioActivityConfigGUI::StartGame() {
+	if (NetLobby::IsHosting()) {
+		// The game gets made from the setup on both machines, once the other one has confirmed that it is starting too. See Update.
+		NetLobby::StartGame(GetLANGameSetup(true));
+		return;
+	}
 	GameActivity* gameActivity = dynamic_cast<GameActivity*>(m_SelectedActivity->Clone());
 
 	gameActivity->SetDifficulty(m_ActivityDifficultySlider->GetValue());
@@ -314,6 +382,18 @@ bool ScenarioActivityConfigGUI::Update(int mouseX, int mouseY) {
 		errorMessage = "Assign players to at least " + std::to_string(minTeamsRequired) + " of the teams!";
 	} else if (teamWithHumans == 0 && !m_SelectedActivity->GetHumansCanSpectate()) {
 		errorMessage = "Assign human players to at least one team!";
+	} else if (NetLobby::IsHosting()) {
+		NetLobby::Update();
+		NetLobby::SetHostedSetup(GetLANGameSetup(false));
+		errorMessage = GetLANGameStatus();
+		if (NetLobby::GameIsToStart()) {
+			if (NetLobby::LaunchGame()) {
+				SetEnabled(false);
+				return true;
+			}
+			NetLobby::Leave();
+			m_HostLANGameCheckbox->SetCheck(GUICheckbox::Unchecked);
+		}
 	} else if (g_UInputMan.CheckMultiMouseKeyboardEnabled(humanPlayers) && !g_UInputMan.AllPlayerInputDevicesKnown(humanPlayers)) {
 		errorMessage = "Some players have not set keyboard or mouse devices. Please go to input settings to configure!";
 	}
@@ -455,11 +535,22 @@ bool ScenarioActivityConfigGUI::HandleInputEvents() {
 				// Make sure all players have known input devices if multimouse is enabled.
 				g_GUISound.ButtonPressSound()->Play();
 				StartGame();
+				if (NetLobby::IsHosting()) {
+					continue;
+				}
 				SetEnabled(false);
 				return true;
 			}
 		} else if (guiEvent.GetType() == GUIEvent::Notification) {
-			if (guiEvent.GetControl() == m_ActivityDifficultySlider) {
+			if (guiEvent.GetControl() == m_HostLANGameCheckbox) {
+				if (m_HostLANGameCheckbox->GetCheck() == GUICheckbox::Checked && !NetLobby::IsHosting()) {
+					if (!NetLobby::StartHosting()) {
+						m_HostLANGameCheckbox->SetCheck(GUICheckbox::Unchecked);
+					}
+				} else if (m_HostLANGameCheckbox->GetCheck() != GUICheckbox::Checked && NetLobby::IsHosting()) {
+					NetLobby::Leave();
+				}
+			} else if (guiEvent.GetControl() == m_ActivityDifficultySlider) {
 				m_ActivityDifficultyLabel->SetText(" " + Activity::GetDifficultyString(m_ActivityDifficultySlider->GetValue()));
 				if (!m_StartingGoldAdjustedManually) {
 					UpdateStartingGoldSliderAndLabel();

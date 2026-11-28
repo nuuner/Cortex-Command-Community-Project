@@ -9,7 +9,6 @@
 #include "PerformanceMan.h"
 #include "UInputMan.h"
 #include "System.h"
-#include "DeterminismChecker.h"
 #include "InputRecorder.h"
 
 using namespace RTE;
@@ -112,12 +111,10 @@ void SettingsMan::UpdateSettingsFile() const {
 }
 
 int SettingsMan::GetNumberOfLuaStatesOverride() const {
-	constexpr int luaStatesWhenCheckingDeterminism = 4;
 	// Which Lua state a script lands on is part of how the simulation plays out, so the number of them can't be left to how many cores this machine has when it has to play out the same elsewhere.
-	if (m_NumberOfLuaStatesOverride == -1 && (DeterminismChecker::IsActive() || InputRecorder::IsActive())) {
-		return luaStatesWhenCheckingDeterminism;
-	}
-	return m_NumberOfLuaStatesOverride;
+	// shortcut: a game with another machine can be started from the menus at any time, long after the Lua states were made, so there's always this many. Make them anew when such a game starts to give single player its one per core back.
+	constexpr int luaStatesForMatchingOtherMachines = 4;
+	return m_NumberOfLuaStatesOverride == -1 ? luaStatesForMatchingOtherMachines : m_NumberOfLuaStatesOverride;
 }
 
 int SettingsMan::ReadProperty(const std::string_view& propName, Reader& reader) {

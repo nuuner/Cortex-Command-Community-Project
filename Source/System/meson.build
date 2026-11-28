@@ -21,6 +21,7 @@ sources += files(
 'System.cpp',
 'DeterminismChecker.cpp',
 'InputRecorder.cpp',
+'NetLobby.cpp',
 'NetLockstep.cpp',
 'InputMapping.cpp',
 'PathFinder.cpp',

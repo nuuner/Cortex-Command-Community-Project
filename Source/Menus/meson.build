@@ -5,6 +5,7 @@ sources += files(
 'BuyMenuGUI.cpp',
 'GibEditorGUI.cpp',
 'InventoryMenuGUI.cpp',
+'LANGamesGUI.cpp',
 'LoadingScreen.cpp',
 'MainMenuGUI.cpp',
 'MetagameGUI.cpp',

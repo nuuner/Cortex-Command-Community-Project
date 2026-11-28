@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Activity.h"
+#include "NetLobby.h"
 
 #include <array>
 
@@ -88,6 +89,7 @@ namespace RTE {
 		GUICheckbox* m_RequireClearPathToOrbitCheckbox;
 		GUICheckbox* m_FogOfWarCheckbox;
 		GUICheckbox* m_DeployUnitsCheckbox;
+		GUICheckbox* m_HostLANGameCheckbox;
 		GUILabel* m_CPULockLabel;
 		GUICollectionBox* m_PlayersAndTeamsConfigBox;
 		std::array<GUICollectionBox*, TeamRows::TeamRowCount> m_TeamIconBoxes;
@@ -109,6 +111,15 @@ namespace RTE {
 
 		/// Sets up and starts the currently selected Activity with the configured settings.
 		void StartGame();
+
+		/// Gets how the game is set up, as the other machine of a LAN game needs to know it to start the same one.
+		/// @param pickRandomTechs Whether to settle which tech the teams that are set to a random one get, which is for when the game starts.
+		/// @return The setup.
+		NetLobby::Setup GetLANGameSetup(bool pickRandomTechs);
+
+		/// Gets what is in the way of starting the LAN game that is being hosted, to show to the player.
+		/// @return What it is, or nothing when the game can start.
+		std::string GetLANGameStatus();
 
 		/// Updates the starting gold slider to the Activity difficulty setting (when applicable) and updates the value in the label according to the value in the slider.
 		/// @return
