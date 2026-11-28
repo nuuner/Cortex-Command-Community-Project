@@ -886,11 +886,11 @@ namespace RTE {
 
 		/// Gets a const reference to this MOSRotating's map of string values.
 		/// @return A const reference to this MOSRotating's map of string values.
-		const std::unordered_map<std::string, std::string>& GetStringValueMap() const { return m_StringValueMap; }
+		const std::map<std::string, std::string>& GetStringValueMap() const { return m_StringValueMap; }
 
 		/// Gets a const reference to this MOSRotating's map of number values.
 		/// @return A const reference to this MOSRotating's map of number values.
-		const std::unordered_map<std::string, double>& GetNumberValueMap() const { return m_NumberValueMap; }
+		const std::map<std::string, double>& GetNumberValueMap() const { return m_NumberValueMap; }
 
 		/// Returns the string value associated with the specified key or "" if it does not exist.
 		/// @param key Key to retrieve value.
@@ -1260,9 +1260,9 @@ namespace RTE {
 
 		volatile bool m_RequestedSyncedUpdate; //!< For optimisation purposes, scripts explicitly request a synced update if they want one.
 
-		std::unordered_map<std::string, std::string> m_StringValueMap; //<! Map to store any generic strings available from script
-		std::unordered_map<std::string, double> m_NumberValueMap; //<! Map to store any generic numbers available from script
-		std::unordered_map<std::string, Entity*> m_ObjectValueMap; //<! Map to store any generic object pointers available from script
+		std::map<std::string, std::string> m_StringValueMap; //<! Map to store any generic strings available from script
+		std::map<std::string, double> m_NumberValueMap; //<! Map to store any generic numbers available from script
+		std::map<std::string, Entity*> m_ObjectValueMap; //<! Map to store any generic object pointers available from script
 		static std::string ms_EmptyString;
 
 		// Special post processing flash effect file and Bitmap. Shuold be loaded from a 32bpp bitmap

@@ -1003,7 +1003,9 @@ void MOSRotating::CreateGibsWhenGibbing(const Vector& impactImpulse, MovableObje
 					float angularVel = std::abs(gibParticleClone->GetAngularVel() * 0.5F) + std::abs(gibParticleClone->GetAngularVel() * 0.5F * offCenterRatio);
 					gibParticleClone->SetAngularVel(angularVel * (rotatedGibOffset.m_X > 0 ? -1 : 1));
 				} else {
-					gibParticleClone->SetAngularVel((gibParticleClone->GetAngularVel() * 0.5F + (gibParticleClone->GetAngularVel() * RandomNum())) * (RandomNormalNum() > 0.0F ? 1.0F : -1.0F));
+					// Drawn one at a time, since the order that the parts of one expression get worked out in is up to the compiler, and machines playing each other have to draw the same numbers in the same order.
+					float angularVelScale = RandomNum();
+					gibParticleClone->SetAngularVel((gibParticleClone->GetAngularVel() * 0.5F + (gibParticleClone->GetAngularVel() * angularVelScale)) * (RandomNormalNum() > 0.0F ? 1.0F : -1.0F));
 				}
 
 				gibParticleClone->SetPos(m_Pos + rotatedGibOffset);
@@ -1270,7 +1272,9 @@ bool MOSRotating::DeepCheck(bool makeMOPs, int skipMOP, int maxMOPs) {
 				if (tally >= 1.0) {
 					tally -= 1.0;
 					(*itr)->SetPos((*itr)->GetPos() - m_Vel.GetNormalized() * depth);
-					(*itr)->SetVel(Vector(velMag * RandomNum(0.0F, splashDir), -RandomNum(0.0F, velMag)));
+					// Drawn one at a time, since the order that the parts of one expression get worked out in is up to the compiler, and machines playing each other have to draw the same numbers in the same order.
+					float splashVelX = velMag * RandomNum(0.0F, splashDir);
+					(*itr)->SetVel(Vector(splashVelX, -RandomNum(0.0F, velMag)));
 					m_DeepHardness += (*itr)->GetMaterial()->GetIntegrity() * (*itr)->GetMaterial()->GetPixelDensity();
 					g_MovableMan.AddParticle(*itr);
 					*itr = 0;

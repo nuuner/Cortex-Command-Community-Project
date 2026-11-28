@@ -21,7 +21,7 @@ namespace RTE {
 			/// @param reference A reference to the GenericSavedEncodedStrings to deep copy.
 			GenericSavedEncodedStrings(const GenericSavedEncodedStrings& reference) = default;
 
-			std::unordered_map<std::string, std::string> m_Data; //!< Stored string data.
+			std::map<std::string, std::string> m_Data; //!< Stored string data.
 
 		private:
 			static const std::string c_ClassName; //!< A string with the friendly formatted type name of this object.
@@ -41,7 +41,7 @@ namespace RTE {
 			/// @param reference A reference to the GenericSavedStrings to deep copy.
 			GenericSavedStrings(const GenericSavedStrings& reference) = default;
 
-			std::unordered_map<std::string, std::string> m_Data; //!< Stored string data.
+			std::map<std::string, std::string> m_Data; //!< Stored string data.
 
 		private:
 			static const std::string c_ClassName; //!< A string with the friendly formatted type name of this object.
@@ -61,7 +61,7 @@ namespace RTE {
 			/// @param reference A reference to the GenericSavedNumbers to deep copy.
 			GenericSavedNumbers(const GenericSavedNumbers& reference) = default;
 
-			std::unordered_map<std::string, double> m_Data; //!< Stored number data.
+			std::map<std::string, double> m_Data; //!< Stored number data.
 
 		private:
 			static const std::string c_ClassName; //!< A string with the friendly formatted type name of this object.

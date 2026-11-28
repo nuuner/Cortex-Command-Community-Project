@@ -793,7 +793,9 @@ void Actor::DropAllInventory() {
 			}
 			// Gib is too close to center to always make it rotate in one direction, so give it a baseline rotation and then randomize
 			else {
-				pObject->SetAngularVel((pObject->GetAngularVel() * RandomNum(0.5F, 1.5F)) * (RandomNum() < 0.5F ? 1.0F : -1.0F));
+				// Drawn one at a time, since the order that the parts of one expression get worked out in is up to the compiler, and machines playing each other have to draw the same numbers in the same order.
+				float angularVelScale = RandomNum(0.5F, 1.5F);
+				pObject->SetAngularVel((pObject->GetAngularVel() * angularVelScale) * (RandomNum() < 0.5F ? 1.0F : -1.0F));
 			}
 
 			// TODO: Optimize making the random angles!")
@@ -896,7 +898,9 @@ void Actor::GibThis(const Vector& impactImpulse, MovableObject* movableObjectToI
 		velRange = 10.0F;
 
 		// Randomize the offset from center to be within the original object
-		gibROffset.SetXY(m_SpriteRadius * 0.35F * RandomNormalNum(), m_SpriteRadius * 0.35F * RandomNormalNum());
+		// Drawn one at a time, since the order that the parts of one expression get worked out in is up to the compiler, and machines playing each other have to draw the same numbers in the same order.
+		float gibROffsetX = m_SpriteRadius * 0.35F * RandomNormalNum();
+		gibROffset.SetXY(gibROffsetX, m_SpriteRadius * 0.35F * RandomNormalNum());
 		// Set up its position and velocity according to the parameters of this AEmitter.
 		pObject->SetPos(m_Pos + gibROffset /*Vector(m_Pos.m_X + 5 * NormalRand(), m_Pos.m_Y + 5 * NormalRand())*/);
 		pObject->SetRotAngle(m_Rotation.GetRadAngle() + pObject->GetRotMatrix().GetRadAngle());
@@ -912,7 +916,9 @@ void Actor::GibThis(const Vector& impactImpulse, MovableObject* movableObjectToI
 		}
 		// Gib is too close to center to always make it rotate in one direction, so give it a baseline rotation and then randomize
 		else {
-			pObject->SetAngularVel((pObject->GetAngularVel() * 0.5F + pObject->GetAngularVel() * RandomNum()) * (RandomNormalNum() > 0.0F ? 1.0F : -1.0F));
+			// Drawn one at a time, since the order that the parts of one expression get worked out in is up to the compiler, and machines playing each other have to draw the same numbers in the same order.
+			float angularVelScale = RandomNum();
+			pObject->SetAngularVel((pObject->GetAngularVel() * 0.5F + pObject->GetAngularVel() * angularVelScale) * (RandomNormalNum() > 0.0F ? 1.0F : -1.0F));
 		}
 
 		// TODO: Optimize making the random angles!")

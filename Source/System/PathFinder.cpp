@@ -277,7 +277,7 @@ void PathFinder::RecalculateAllCosts() {
 std::vector<int> PathFinder::RecalculateAreaCosts(std::deque<Box>& boxList, size_t nodeUpdateLimit) {
 	ZoneScoped;
 
-	std::unordered_set<int> nodeIDsToUpdate;
+	std::set<int> nodeIDsToUpdate; // In order, so that what comes back is in the same order on every machine.
 
 	while (!boxList.empty()) {
 		std::vector<int> nodesInside = GetNodeIdsInBox(boxList.front());

@@ -102,7 +102,7 @@ void SpatialPartitionGrid::Add(const IntRect& rect, const MovableObject& mo) {
 std::vector<MovableObject*> SpatialPartitionGrid::GetMOsInBox(const Box& box, int ignoreTeam, bool getsHitByMOsOnly) const {
 	RTEAssert(ignoreTeam >= Activity::NoTeam && ignoreTeam < Activity::MaxTeamCount, "Invalid ignoreTeam given to SpatialPartitioningGrid::GetMOsInBox()!");
 
-	std::unordered_set<MOID> potentialMOIDs;
+	std::set<MOID> potentialMOIDs; // In order, so that what comes back is in the same order on every machine. A hashed set's order is up to the standard library.
 
 	Vector topLeft = box.GetCorner();
 	Vector bottomRight = topLeft + Vector(box.GetWidth(), box.GetHeight());
@@ -140,7 +140,7 @@ std::vector<MovableObject*> SpatialPartitionGrid::GetMOsInBox(const Box& box, in
 std::vector<MovableObject*> SpatialPartitionGrid::GetMOsInRadius(const Vector& center, float radius, int ignoreTeam, bool getsHitByMOsOnly) const {
 	RTEAssert(ignoreTeam >= Activity::NoTeam && ignoreTeam < Activity::MaxTeamCount, "Invalid ignoreTeam given to SpatialPartitioningGrid::GetMOsInRadius()!");
 
-	std::unordered_set<MOID> potentialMOIDs;
+	std::set<MOID> potentialMOIDs; // In order, so that what comes back is in the same order on every machine. A hashed set's order is up to the standard library.
 
 	int topLeftCellX = static_cast<int>(std::floor((center.m_X - radius) / static_cast<float>(m_CellSize)));
 	int topLeftCellY = static_cast<int>(std::floor((center.m_Y - radius) / static_cast<float>(m_CellSize)));
@@ -185,7 +185,7 @@ const std::vector<MOID>& SpatialPartitionGrid::GetMOIDsAtPosition(int x, int y, 
 std::vector<MovableObject*> SpatialPartitionGrid::GetMOsAtPosition(int x, int y, int ignoreTeam, bool getsHitByMOsOnly) const {
 	RTEAssert(ignoreTeam >= Activity::NoTeam && ignoreTeam < Activity::MaxTeamCount, "Invalid ignoreTeam given to SpatialPartitioningGrid::GetMOsAtPosition()!");
 
-	std::unordered_set<MOID> potentialMOIDs;
+	std::set<MOID> potentialMOIDs; // In order, so that what comes back is in the same order on every machine. A hashed set's order is up to the standard library.
 
 	int cellX = x / m_CellSize;
 	int cellY = y / m_CellSize;

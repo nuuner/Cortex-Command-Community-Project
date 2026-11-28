@@ -5,6 +5,7 @@
 
 #include <mutex>
 #include <list>
+#include <set>
 #include <unordered_set>
 
 // Concoction based on:
@@ -311,7 +312,7 @@ namespace RTE {
 #pragma region Groups
 		/// Gets the set of groups this is member of.
 		/// @return A pointer to a list of strings which describes the groups this is added to. Ownership is NOT transferred!
-		const std::unordered_set<std::string>* GetGroups() const { return &m_Groups; }
+		const std::set<std::string>* GetGroups() const { return &m_Groups; }
 
 		/// Gets whether this is part of a specific group or not.
 		/// @param whichGroup A string which describes the group to check for.
@@ -381,7 +382,7 @@ namespace RTE {
 		bool m_IsOriginalPreset; //!< Whether this is to be added to the PresetMan as an original preset instance.
 		int m_DefinedInModule; //!< The DataModule ID that this was successfully added to at some point. -1 if not added to anything yet.
 
-		std::unordered_set<std::string> m_Groups; //!< List of all tags associated with this. The groups are used to categorize and organize Entities.
+		std::set<std::string> m_Groups; //!< List of all tags associated with this. The groups are used to categorize and organize Entities.
 
 		int m_RandomWeight; //!< Random weight used when picking item using PresetMan::GetRandomBuyableOfGroupFromTech. From 0 to 100. 0 means item won't be ever picked.
 

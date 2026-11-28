@@ -513,11 +513,12 @@ int SceneMan::RemoveOrphans(int posX, int posY,
 			// Density is used as the mass for the new MOPixel
 			float tempMax = 2.0F * sprayScale;
 			float tempMin = tempMax / 2.0F;
+			// Drawn one at a time, since the order that the parts of one expression get worked out in is up to the compiler, and machines playing each other have to draw the same numbers in the same order.
+			float sprayVelX = -RandomNum(tempMin, tempMax);
 			MOPixel* pixelMO = new MOPixel(spawnColor,
 			                               spawnMat->GetPixelDensity(),
 			                               Vector(posX, posY),
-			                               Vector(-RandomNum(tempMin, tempMax),
-			                                      -RandomNum(tempMin, tempMax)),
+			                               Vector(sprayVelX, -RandomNum(tempMin, tempMax)),
 			                               new Atom(Vector(), spawnMat->GetIndex(), 0, spawnColor, 2),
 			                               0);
 
@@ -599,11 +600,12 @@ bool SceneMan::TryPenetrate(int posX,
 				float tempMinX = tempMaxX / 2.0F;
 				float tempMaxY = velocity.m_Y * sprayScale;
 				float tempMinY = tempMaxY / 2.0F;
+				// Drawn one at a time, since the order that the parts of one expression get worked out in is up to the compiler, and machines playing each other have to draw the same numbers in the same order.
+				float sprayVelX = -RandomNum(tempMinX, tempMaxX);
 				MOPixel* pixelMO = new MOPixel(spawnColor,
 				                               spawnMat->GetPixelDensity(),
 				                               Vector(posX, posY),
-				                               Vector(-RandomNum(tempMinX, tempMaxX),
-				                                      -RandomNum(tempMinY, tempMaxY)),
+				                               Vector(sprayVelX, -RandomNum(tempMinY, tempMaxY)),
 				                               //                                              -(impulse * (sprayScale * RandomNum() / spawnMat.density)),
 				                               new Atom(Vector(), spawnMat->GetIndex(), 0, spawnColor, 2),
 				                               0);
