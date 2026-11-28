@@ -975,6 +975,21 @@ void UInputMan::HandleLocalInputEvent(const SDL_Event& inputEvent) {
 		event.motion.xrel *= m_MouseSensitivity;
 		event.motion.yrel *= m_MouseSensitivity;
 	}
+	// With CCCP_NET_LOG, how much mouse movement this machine's system hands over, to tell a mouse that it doesn't report from one that the game ignores.
+	static const bool logMouse = std::getenv("CCCP_NET_LOG") != nullptr;
+	if (logMouse) {
+		static int moveCount = 0, moveCountWhileDisabled = 0;
+		static Uint64 lastLog = 0;
+		if (event.type == SDL_EVENT_MOUSE_MOTION) {
+			++moveCount;
+			moveCountWhileDisabled += m_DisableMouseMoving;
+		}
+		if (SDL_GetTicks() - lastLog > 1000) {
+			std::cerr << "Input: " << moveCount << " mouse move events from the system, " << moveCountWhileDisabled << " of them while mouse movement was off. Relative mode " << SDL_GetWindowRelativeMouseMode(g_WindowMan.GetWindow()) << ", video driver " << SDL_GetCurrentVideoDriver() << "." << std::endl;
+			moveCount = moveCountWhileDisabled = 0;
+			lastLog = SDL_GetTicks();
+		}
+	}
 	HandleInputEvent(event);
 }
 
@@ -1329,8 +1344,9 @@ void UInputMan::UpdateMouseInput() {
 	// won't cause the whole window to move if the user clicks the title bar and unintentionally drags it due to programmatic positioning.
 	int mousePosX = m_MouseStates.at(0).position.m_X / GetMouseResMultiplier();
 	int mousePosY = m_MouseStates.at(0).position.m_Y / GetMouseResMultiplier();
+	// When input is recorded or shared with another machine, mouse movement is enabled right away instead. In lockstep that goes for whatever turned it off, since this machine's window losing focus before the game began would otherwise leave it off for good.
 	// When input is recorded or shared with another machine, mouse movement is enabled right away instead. Where this machine's mouse is can't be allowed to decide it, since the mouse positions of the simulation get kept within the screen depending on this, and that has to happen in the same update on every machine.
-	if (m_DisableMouseMoving && m_PrepareToEnableMouseMoving && (InputRecorder::IsActive() || (mousePosX >= 0 && mousePosX < g_WindowMan.GetResX() && mousePosY >= 0 && mousePosY < g_WindowMan.GetResY()))) {
+	if (m_DisableMouseMoving && (m_PrepareToEnableMouseMoving || NetLockstep::IsActive()) && (InputRecorder::IsActive() || (mousePosX >= 0 && mousePosX < g_WindowMan.GetResX() && mousePosY >= 0 && mousePosY < g_WindowMan.GetResY()))) {
 		m_DisableMouseMoving = m_PrepareToEnableMouseMoving = false;
 	}
 }
