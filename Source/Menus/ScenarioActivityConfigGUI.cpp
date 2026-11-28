@@ -284,7 +284,7 @@ std::string ScenarioActivityConfigGUI::GetLANGameStatus() {
 	if (!GetLANGameSetup(false).HasPlayersOnTeams()) {
 		return "Put player 1 (you) and player 2 (the player who joins) on teams!";
 	} else if (!NetLobby::HasPeer()) {
-		return "Waiting for a player on your network to join from their Multiplayer menu...";
+		return "Waiting for a player to join. Each of you uses your own player 1 controls.";
 	} else if (!NetLobby::IsPeerReady()) {
 		return NetLobby::GetPeerName() + " has joined. Waiting for them to be ready...";
 	} else if (NetLobby::IsStarting()) {

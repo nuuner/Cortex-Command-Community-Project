@@ -329,6 +329,11 @@ void UInputMan::DisableMouseMoving(bool disable) {
 	}
 }
 bool UInputMan::CheckMultiMouseKeyboardEnabled(std::optional<std::reference_wrapper<const std::vector<int>>> players) {
+	// In lockstep each player's input arrives on a device of their own, whatever kind it is, and has to be kept apart from the other players'.
+	if (NetLockstep::HasTakenOverControlSchemes()) {
+		m_EnableMultiMouseKeyboard = true;
+		return true;
+	}
 	if (m_ForceDisableMultiMouseKeyboard) {
 		m_EnableMultiMouseKeyboard = false;
 		return false;

@@ -74,6 +74,10 @@ namespace RTE {
 		/// @param joinerScheme The control scheme of the other player.
 		static void SetPlayerControlSchemeTexts(const std::string& hostScheme, const std::string& joinerScheme);
 
+		/// Gets whether the players' control schemes are the ones set up for a game in lockstep, in which each player's input arrives on a made up device of their own.
+		/// @return Whether they are.
+		static bool HasTakenOverControlSchemes();
+
 		/// Gets the ID of the made up mouse, keyboard and gamepad that a player's input arrives on. It is the same on both machines.
 		/// @param player The player.
 		/// @return The device ID.
