@@ -131,6 +131,8 @@ If you want to change the buildtype afterwards, you can use `meson configure --b
 
 * older versions of `pipewire(-alsa)` and fmod don't work well together, so the game might [not close, have no sound or crash](https://gitlab.freedesktop.org/pipewire/pipewire/-/issues/1514). Workaround by `ln -s /bin/true /usr/bin/pulseaudio`
 
+* LAN multiplayer on a Mac over Wi-Fi has a high input delay: the link that macOS keeps for AirDrop, AirPlay and Handoff (`awdl0`) takes the Wi-Fi radio off the network for a moment about twice a second, and the game raises its input delay from 1 update to 3-5 to cover that. Check it with `ifconfig awdl0 | grep status`, and turn it off with `sudo ifconfig awdl0 down`. It comes back when Wi-Fi restarts or one of those features wakes it, so check again then. A network cable avoids it altogether.
+
 ***
 ## Debugging with VS Code
 
