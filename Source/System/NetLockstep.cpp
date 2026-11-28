@@ -527,16 +527,29 @@ void NetLockstep::BeginSimUpdate() {
 		}
 	}
 
+	// With CCCP_NET_LOG, how much input of each kind each player's machine sent, to see where a dead mouse or keyboard goes missing.
+	static int appliedCounts[c_PlayerCount][3] = {};
 	s_ApplyingInput = true;
-	for (std::map<long long, std::vector<std::string>>& playerLines: s_InputLines) {
+	for (int player = 0; player < c_PlayerCount; ++player) {
+		std::map<long long, std::vector<std::string>>& playerLines = s_InputLines[player];
 		if (auto lines = playerLines.find(s_SimUpdate); lines != playerLines.end()) {
 			for (const std::string& line: lines->second) {
 				InputRecorder::ApplyLine(line);
+				if (size_t kind = std::string_view("kmb").find(line.empty() ? ' ' : line[0]); kind != std::string_view::npos) {
+					++appliedCounts[player][kind];
+				}
 			}
 			playerLines.erase(lines);
 		}
 	}
 	s_ApplyingInput = false;
+	if (logTimings && s_SimUpdate % 60 == 0) {
+		for (int player = 0; player < c_PlayerCount; ++player) {
+			Vector aim = g_UInputMan.AnalogAimValues(player);
+			std::cerr << std::format("Lockstep input: player {} on device {}, got {} key, {} mouse move and {} mouse button events, aim {:.2f} {:.2f}.", player + 1, static_cast<int>(g_UInputMan.GetControlScheme(player)->GetDevice()), appliedCounts[player][0], appliedCounts[player][1], appliedCounts[player][2], aim.m_X, aim.m_Y) << std::endl;
+			std::fill(std::begin(appliedCounts[player]), std::end(appliedCounts[player]), 0);
+		}
+	}
 }
 
 std::string NetLockstep::AdaptInputDelay() {
