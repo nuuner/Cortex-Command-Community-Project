@@ -778,15 +778,14 @@ bool NetLockstep::CorrectOtherMachine() {
 					wanted.push_back((bits >> bit) & 1);
 				}
 			}
+			// The terrain tiles come before the objects in what the other machine wants. Those are the same bytes on both ends, so this machine's own stay as they are.
+			wanted.resize(std::max(wanted.size(), tileHashes.size()), false);
 			std::string objects;
-			g_MovableMan.WriteSyncObjects(wanted, objects);
-			// The terrain tiles come after the objects in what the other machine wants. Those are the same bytes on both ends, so this machine's own stay as they are.
-			size_t firstTile = wanted.size() >= tileHashes.size() ? wanted.size() - tileHashes.size() : 0;
-			wanted.resize(firstTile + tileHashes.size(), false);
+			g_MovableMan.WriteSyncObjects(std::vector<bool>(wanted.begin() + static_cast<std::ptrdiff_t>(tileHashes.size()), wanted.end()), objects);
 			std::string tiles;
 			uint32_t lastTile = UINT32_MAX;
 			ForEachTerrainTile([&](uint32_t tile, unsigned char* row, size_t size) {
-				if (wanted[firstTile + tile]) {
+				if (wanted[tile]) {
 					if (tile != lastTile) {
 						AppendValue(tiles, tile);
 						lastTile = tile;
@@ -887,14 +886,17 @@ bool NetLockstep::UseReceivedBlob() {
 		bool readable = TakeValue(blob, digestSize) && digestSize <= blob.size();
 		s_SyncDigest = readable ? std::string(blob.substr(0, digestSize)) : "";
 		std::vector<bool> wanted;
-		readable = readable && g_MovableMan.FindSyncDifferences(s_SyncDigest, wanted);
+		std::vector<bool> wantedObjects;
+		readable = readable && g_MovableMan.FindSyncDifferences(s_SyncDigest, wantedObjects);
 		if (readable) {
+			// The tiles go first, since the host knows how many of those there are, and so where the objects start.
 			blob.remove_prefix(digestSize);
 			for (uint64_t ownTileHash: GetTerrainTileHashes()) {
 				uint64_t hostTileHash = 0;
 				readable = readable && TakeValue(blob, hostTileHash);
 				wanted.push_back(hostTileHash != ownTileHash);
 			}
+			wanted.insert(wanted.end(), wantedObjects.begin(), wantedObjects.end());
 		}
 		s_ReceivedBlob.clear();
 		if (readable && wanted.size() <= c_MaxWantedSize * 4) {
